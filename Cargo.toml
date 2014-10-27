@@ -1,0 +1,12 @@
+[project]
+
+name = "astaire"
+version = "0.0.1"
+authors = ["Carl Lerche <me@carllerche.com>"]
+
+[dependencies.syncbox]
+path = "libs/syncbox"
+
+[[test]]
+name = "astaire-test"
+path = "test/test.rs"
