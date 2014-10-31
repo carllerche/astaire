@@ -1,10 +1,11 @@
 use core::{Cell};
+use util::Future;
 
-pub trait Actor<M: Send> : Send {
+pub trait Actor<Msg: Send, Ret: Future = ()> : Send {
     fn prepare(&mut self) {
     }
 
-    fn receive(&mut self, msg: M);
+    fn receive(&mut self, msg: Msg) -> Ret;
 }
 
 /*

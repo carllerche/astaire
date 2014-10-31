@@ -1,3 +1,3 @@
-pub use self::unsafe_arc::UnsafeArc;
+pub use self::future::Future;
 
-mod unsafe_arc;
+pub mod future;
