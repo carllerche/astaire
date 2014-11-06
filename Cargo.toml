@@ -7,6 +7,6 @@ authors = ["Carl Lerche <me@carllerche.com>"]
 [dependencies.syncbox]
 path = "libs/syncbox"
 
-[[test]]
-name = "astaire-test"
-path = "test/test.rs"
+# [[test]]
+# name = "astaire-test"
+# path = "test/test.rs"

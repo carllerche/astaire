@@ -9,7 +9,7 @@ pub fn spawn<M: Send, A: Actor<M>>(actor: A) -> ActorRef<M, A> {
 }
 
 pub struct System {
-    runtime: Runtime,
+    pub runtime: Runtime,
 }
 
 impl System {
