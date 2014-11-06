@@ -9,14 +9,13 @@ pub trait Actor<Msg: Send, Ret: Future = ()> : Send {
 }
 
 /*
- * TODO: Pending rust bug fix
- *       https://github.com/rust-lang/rust/issues/18453
-impl<M: Send, F: Send + FnMut(M)> Actor<M> for F {
-    fn receive(&mut self, msg: M) {
+ * TODO: Specifying the return produces ICE
+ */
+impl<Msg: Send, F: Send + FnMut(Msg)> Actor<Msg, ()> for F {
+    fn receive(&mut self, msg: Msg) {
         self.call_mut((msg,));
     }
 }
-*/
 
 // There are multiple kinds of actor refs:
 // - Refs that are useable outside of the system

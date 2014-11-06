@@ -3,6 +3,7 @@ pub use self::rt::{Runtime, RuntimeWeak};
 use std::fmt;
 
 mod cell;
+pub mod future;
 pub mod rt;
 
 pub trait Coordinator {
@@ -12,11 +13,16 @@ pub trait Coordinator {
 enum Event<M> {
     Message(M),
     Spawn,
+    Exec(Box<FnOnce<(),()> + Send>),
 }
 
 impl<T> Event<T> {
     fn message(message: T) -> Event<T> {
         Message(message)
+    }
+
+    fn exec(f: Box<FnOnce<(),()> + Send>) -> Event<T> {
+        Exec(f)
     }
 
     fn is_message(&self) -> bool {
@@ -38,6 +44,7 @@ impl<T> fmt::Show for Event<T> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Message(..) => write!(fmt, "Message"),
+            Exec(..) => write!(fmt, "Exec"),
             Spawn => write!(fmt, "Spawn"),
         }
     }

@@ -27,7 +27,7 @@ pub fn test_sending_message_to_lambda_actor() {
     let (tx, rx) = channel();
 
     let sys = System::new();
-    let act = sys.spawn(move |:msg| tx.send(msg));
+    let act = sys.spawn(move |&mut:msg:&'static str| tx.send(msg));
 
     act.send("hello");
     assert_eq!(rx.recv(), "hello");

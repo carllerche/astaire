@@ -7,3 +7,4 @@ extern crate astaire;
 extern crate log;
 
 mod test_actor_system;
+mod test_future_val;

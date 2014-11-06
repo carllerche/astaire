@@ -1,6 +1,7 @@
 use {Actor};
 use core::{Cell, Event, Runtime, RuntimeWeak};
-use core::rt::Tick;
+use core::rt::Schedule;
+use util::Future;
 use syncbox::{LinkedQueue, Consume, Produce};
 use syncbox::locks::{MutexCell, CondVar};
 use std::mem;
@@ -24,18 +25,20 @@ pub struct SchedulerInner {
     condvar: CondVar,
 }
 
-// Gets a pointer to the current system
 #[thread_local]
-static mut RUNTIME: *const Runtime = 0 as *const Runtime;
+static mut SCHEDULED: Option<&'static Schedule+Send+'static> = None;
 
-pub fn current_runtime<'a>() -> &'a Runtime {
+pub fn current_runtime<'a>() -> Runtime {
     unsafe {
-        if RUNTIME.is_null() {
-            panic!("must be called in context of an actor");
+        match currently_scheduled() {
+            Some(s) => s.runtime(),
+            None => panic!("must be called in context of an actor"),
         }
-
-        mem::transmute(RUNTIME)
     }
+}
+
+pub unsafe fn currently_scheduled<'a>() -> Option<&'a Schedule+'static> {
+    SCHEDULED.map(|r| mem::transmute(r))
 }
 
 impl Scheduler {
@@ -60,7 +63,7 @@ impl Scheduler {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    pub fn dispatch<M: Send, A: Actor<M>>(&self, cell: Cell<M, A>, event: Event<M>) {
+    pub fn dispatch<Msg: Send, Ret: Future, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>, event: Event<Msg>) {
         debug!("dispatching event to cell");
         if cell.deliver_event(event) {
             debug!("  cell requires scheduling");
@@ -88,9 +91,9 @@ impl SchedulerInner {
     }
 
     // Schedule the actor for execution[
-    fn schedule_actor<M: Send, A: Actor<M>>(&self, cell: Cell<M, A>) {
+    fn schedule_actor<Msg: Send, Ret: Future, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>) {
         // self.enqueue(Task(proc() -> bool { cell.tick() }));
-        self.enqueue(Task(box cell as Box<Tick + Send>));
+        self.enqueue(Task(box cell as Box<Schedule + Send>));
     }
 
     fn enqueue(&self, op: Op) {
@@ -100,7 +103,7 @@ impl SchedulerInner {
 }
 
 enum Op {
-    Task(Box<Tick + Send>),
+    Task(Box<Schedule + Send>),
     Terminate,
 }
 
@@ -113,16 +116,18 @@ fn worker_loop(scheduler: Arc<SchedulerInner>, runtime: RuntimeWeak) {
         if let Some(op) = scheduler.queue.take_wait(Duration::seconds(120)) {
 
             match op {
-                Task(t) => {
+                Task(scheduled) => {
                     if let Some(rt) = runtime.upgrade() {
-                        unsafe { RUNTIME = &rt as *const Runtime };
+                        unsafe { SCHEDULED = Some(mem::transmute(&*scheduled)) };
 
                         // If true, requires reschedule
-                        if t.tick() {
+                        if scheduled.tick() {
                             debug!("more work to be done, rescheduling");
-                            scheduler.queue.put(Task(t))
+                            scheduler.queue.put(Task(scheduled))
                                 .ok().expect("[BUG] not handled");
                         }
+
+                        unsafe { SCHEDULED = None };
                     } else {
                         // The system has been shutdown, exit worker
                         break;

@@ -3,6 +3,7 @@
 #![feature(if_let)]
 #![feature(while_let)]
 #![feature(thread_local)]
+#![feature(associated_types)]
 #![feature(overloaded_calls)]
 #![feature(unboxed_closures)]
 #![feature(unsafe_destructor)]
@@ -23,7 +24,13 @@ pub use system::{
     spawn,
 };
 
-pub mod util;
+pub mod util {
+    pub use core::future::Future;
+
+    pub mod future {
+        pub use core::future::{Val};
+    }
+}
 
 mod core;
 mod actor;

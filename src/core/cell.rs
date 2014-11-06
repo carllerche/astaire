@@ -1,40 +1,52 @@
 use {Actor};
-use core::{rt, Event, Spawn, Message, Runtime};
+use core::{rt, Event, Spawn, Message, Exec, Runtime};
+use util::Future;
 
 use std::cell::UnsafeCell;
+use std::mem;
 use std::num::FromPrimitive;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUint, Relaxed};
 use syncbox::{Consume, Produce, LinkedQueue};
 
-pub struct Cell<M, A> {
-    inner: Arc<CellInner<M, A>>,
+pub struct Cell<Msg, A> {
+    inner: Arc<CellInner<Msg, A>>,
 }
 
-impl<M: Send, A: Actor<M>> Cell<M, A> {
-    pub fn new(actor: A, runtime: Runtime) -> Cell<M, A> {
+impl<Msg: Send, Ret: Future, A: Actor<Msg, Ret>> Cell<Msg, A> {
+    pub fn new(actor: A, runtime: Runtime) -> Cell<Msg, A> {
         Cell {
             inner: Arc::new(CellInner::new(actor, runtime))
         }
     }
 
-    pub fn send_message(&self, msg: M) {
+    pub fn send_message(&self, msg: Msg) {
         self.inner.send_message(msg, self.clone());
     }
 
-    pub fn deliver_event(&self, event: Event<M>) -> bool {
+    pub fn deliver_event(&self, event: Event<Msg>) -> bool {
         self.inner.deliver_event(event)
     }
 }
 
-impl<M: Send, A: Actor<M>> rt::Tick for Cell<M, A> {
+impl<Msg: Send, Ret: Future, A: Actor<Msg, Ret>> rt::Schedule for Cell<Msg, A> {
     fn tick(&self) -> bool {
         self.inner.tick()
     }
+
+    fn schedule(&self, f: Box<FnOnce<(),()> + Send>) -> Box<FnOnce<(),()> + Send> {
+        let cell = self.clone();
+
+        box move |:| { cell.inner.deliver_event(Event::exec(f)); }
+    }
+
+    fn runtime(&self) -> Runtime {
+        self.inner.runtime.clone()
+    }
 }
 
-impl<M: Send, A: Actor<M>> Clone for Cell<M, A> {
-    fn clone(&self) -> Cell<M, A> {
+impl<Msg: Send, Ret: Future, A: Actor<Msg, Ret>> Clone for Cell<Msg, A> {
+    fn clone(&self) -> Cell<Msg, A> {
         Cell { inner: self.inner.clone() }
     }
 }
@@ -46,7 +58,7 @@ impl<M: Send, A: Actor<M>> Clone for Cell<M, A> {
 //   mut safety.
 // - The cell needs to know which runtime it is from, but using std::Arc is
 //   pretty heavy. Migrate to a version that keeps thread local ref counts.
-struct CellInner<M, A> {
+struct CellInner<Msg, A> {
     // The actor that the cell is powering
     actor: UnsafeCell<A>,
     // The state of the actor
@@ -54,13 +66,13 @@ struct CellInner<M, A> {
     // The runtime that the actor belongs to
     runtime: Runtime,
     // The mailbox for all user level messages
-    mailbox: LinkedQueue<Event<M>>,
+    mailbox: LinkedQueue<Event<Msg>>,
     // THe mailbox for all system messages
-    sys_mailbox: LinkedQueue<Event<M>>,
+    sys_mailbox: LinkedQueue<Event<Msg>>,
 }
 
-impl<M: Send, A: Actor<M>> CellInner<M, A> {
-    fn new(actor: A, runtime: Runtime) -> CellInner<M, A> {
+impl<Msg: Send, Ret: Future, A: Actor<Msg, Ret>> CellInner<Msg, A> {
+    fn new(actor: A, runtime: Runtime) -> CellInner<Msg, A> {
         CellInner {
             actor: UnsafeCell::new(actor),
             state: AtomicUint::new(Init as uint),
@@ -70,14 +82,14 @@ impl<M: Send, A: Actor<M>> CellInner<M, A> {
         }
     }
 
-    pub fn send_message(&self, msg: M, cell: Cell<M, A>) {
+    pub fn send_message(&self, msg: Msg, cell: Cell<Msg, A>) {
         debug!("sending message");
         self.runtime.dispatch(cell, Event::message(msg));
     }
 
     // Atomically enqueues the message and returns whether or not the actor
     // should be scheduled.
-    fn deliver_event(&self, event: Event<M>) -> bool {
+    fn deliver_event(&self, event: Event<Msg>) -> bool {
         // Track if the event is a spawn
         let spawn = event.is_spawn();
 
@@ -123,7 +135,7 @@ impl<M: Send, A: Actor<M>> CellInner<M, A> {
         }
     }
 
-    fn enqueue_event(&self, event: Event<M>) {
+    fn enqueue_event(&self, event: Event<Msg>) {
         // TODO: Handle error
         if event.is_message() {
             self.mailbox.put(event).ok().unwrap();
@@ -205,13 +217,18 @@ impl<M: Send, A: Actor<M>> CellInner<M, A> {
         return false;
     }
 
-    fn process_event(&self, event: Event<M>) {
+    fn process_event(&self, event: Event<Msg>) {
         debug!("processing event; event={}", event);
 
         match event {
-            Message(msg) => self.actor().receive(msg),
+            Message(msg) => self.receive_msg(msg),
+            Exec(f) => f.call_once(()),
             Spawn => self.actor().prepare(),
         }
+    }
+
+    fn receive_msg(&self, msg: Msg) {
+        self.actor().receive(msg);
     }
 
     // Pretty hacky

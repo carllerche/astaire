@@ -6,6 +6,7 @@
 use {Actor, ActorRef};
 use actor;
 use core::{Cell, Event, Spawn};
+use util::Future;
 use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicUint, Relaxed};
 use std::time::Duration;
@@ -19,10 +20,15 @@ mod scheduler;
 #[path = "scheduler_dev.rs"]
 mod scheduler;
 
-pub trait Tick {
+pub trait Schedule {
     // Scheduler tick, returns whether ot not to reschedule for another
     // iteration.
     fn tick(&self) -> bool;
+
+    // Schedule the function to execute in the context of this schedulable type
+    fn schedule(&self, f: Box<FnOnce<(),()> + Send>) -> Box<FnOnce<(),()> + Send>;
+
+    fn runtime(&self) -> Runtime;
 }
 
 /*
@@ -56,12 +62,12 @@ impl Runtime {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    pub fn dispatch<M: Send, A: Actor<M>>(&self, cell: Cell<M, A>, event: Event<M>) {
+    pub fn dispatch<Msg: Send, Ret: Future, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>, event: Event<Msg>) {
         self.inner.dispatch(cell, event);
     }
 
     /// Spawn a new actor
-    pub fn spawn<M: Send, A: Actor<M>>(&self, actor: A) -> ActorRef<M, A> {
+    pub fn spawn<Msg: Send, Ret: Future, A: Actor<Msg, Ret>>(&self, actor: A) -> ActorRef<Msg, A> {
         debug!("spawning actor");
         let cell = Cell::new(actor, self.clone());
         self.inner.dispatch(cell.clone(), Spawn);
@@ -164,7 +170,7 @@ impl RuntimeInner {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    fn dispatch<M: Send, A: Actor<M>>(&self, cell: Cell<M, A>, event: Event<M>) {
+    fn dispatch<Msg: Send, Ret: Future, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>, event: Event<Msg>) {
         self.scheduler.dispatch(cell, event);
     }
 }
