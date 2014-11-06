@@ -1,5 +1,7 @@
 use astaire::{Actor, ActorRef, System};
+use astaire::util::future::{Val, Producer};
 
+/*
 struct Simple(Sender<uint>);
 
 impl Actor<uint> for Simple {
@@ -9,14 +11,24 @@ impl Actor<uint> for Simple {
         tx.send(msg);
     }
 }
+*/
 
 #[test]
-pub fn test_sending_message_to_simple_actor() {
-    let (tx, rx) = channel();
+pub fn test_sending_simple_future() {
+    let (tx, rx) = channel::<uint>();
 
     let sys = System::new();
-    let act = sys.spawn(Simple(tx));
+    let one = sys.spawn(move |&mut: p: Producer<uint>| p.put(123u));
 
-    act.send(123u);
+    let two = sys.spawn(move |&mut: _| {
+        let (f, p) = Val::pair();
+        let tx = tx.clone();
+
+        one.send(p);
+        f.map(move |:v:uint| tx.send(v));
+    });
+
+    two.send("go");
+
     assert_eq!(rx.recv(), 123u);
 }

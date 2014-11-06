@@ -28,7 +28,7 @@ pub mod util {
     pub use core::future::Future;
 
     pub mod future {
-        pub use core::future::{Val};
+        pub use core::future::{Val, Producer};
     }
 }
 
