@@ -1,5 +1,5 @@
 use super::Future;
-use core::rt::Schedule;
+use core::rt::{Schedule, currently_scheduled};
 
 use std::mem;
 use std::sync::Arc;
@@ -181,13 +181,9 @@ struct Waiter<T> {
     callback: Box<FnOnce<(),()> + Send>,
 }
 
-fn currently_scheduled() -> Option<&'static Schedule+'static> {
-    unimplemented!()
-}
-
 impl<T: Send> Waiter<T> {
     fn new<F: FnOnce() + Send>(cb: F) -> Waiter<T> {
-        let cb = currently_scheduled().unwrap().schedule(box cb);
+        let cb = unsafe { currently_scheduled().unwrap().schedule(box cb) };
         Waiter { callback: cb }
     }
 

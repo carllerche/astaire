@@ -1,5 +1,7 @@
 #![feature(phase)]
+#![feature(if_let)]
 #![feature(unboxed_closures)]
+#![feature(default_type_params)]
 
 extern crate astaire;
 

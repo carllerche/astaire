@@ -8,9 +8,6 @@ pub trait Actor<Msg: Send, Ret: Future = ()> : Send {
     fn receive(&mut self, msg: Msg) -> Ret;
 }
 
-/*
- * TODO: Specifying the return produces ICE
- */
 impl<Msg: Send, R: Future, F: Send + FnMut(Msg) -> R> Actor<Msg, R> for F {
     fn receive(&mut self, msg: Msg) -> R {
         self.call_mut((msg,))

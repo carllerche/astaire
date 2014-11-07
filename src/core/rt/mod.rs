@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicUint, Relaxed};
 use std::time::Duration;
 
 use self::scheduler::Scheduler;
+pub use self::scheduler::currently_scheduled;
 
 #[cfg(ndebug)]
 mod scheduler;
