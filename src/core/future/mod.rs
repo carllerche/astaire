@@ -1,7 +1,7 @@
-pub use self::stream::Stream;
+// pub use self::stream::Stream;
 pub use self::val::{Val, Producer};
 
-mod stream;
+// mod stream;
 mod val;
 
 pub trait Future : Send {

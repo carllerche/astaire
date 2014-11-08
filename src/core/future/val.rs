@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::Future;
 use core::rt::{Schedule, currently_scheduled};
 

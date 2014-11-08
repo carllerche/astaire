@@ -3,7 +3,6 @@ use core::{rt, Event, Spawn, Message, Exec, Runtime};
 use util::Future;
 
 use std::cell::UnsafeCell;
-use std::mem;
 use std::num::FromPrimitive;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUint, Relaxed};

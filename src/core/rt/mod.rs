@@ -7,7 +7,7 @@ use {Actor, ActorRef};
 use actor;
 use core::{Cell, Event, Spawn};
 use util::Future;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc};
 use std::sync::atomic::{AtomicUint, Relaxed};
 use std::time::Duration;
 
@@ -55,7 +55,7 @@ impl Runtime {
     }
 
     pub fn start(&self) {
-        self.inner.start(self.downgrade());
+        self.inner.start();
     }
 
     pub fn shutdown(&self, timeout: Duration) {
@@ -74,29 +74,11 @@ impl Runtime {
         self.inner.dispatch(cell.clone(), Spawn);
         actor::new_ref(cell)
     }
-
-    pub fn downgrade(&self) -> RuntimeWeak {
-        RuntimeWeak { inner: self.inner.downgrade() }
-    }
-
-    // The following fns should be called in context of an actor
 }
 
 impl Clone for Runtime {
     fn clone(&self) -> Runtime {
         Runtime { inner: self.inner.clone() }
-    }
-}
-
-// Weak ref to the runtime
-pub struct RuntimeWeak {
-    inner: Weak<RuntimeInner>,
-}
-
-impl RuntimeWeak {
-    pub fn upgrade(&self) -> Option<Runtime> {
-        self.inner.upgrade()
-            .map(|rt| Runtime { inner: rt })
     }
 }
 
@@ -114,7 +96,7 @@ impl RuntimeInner {
     }
 
     /// Start the runtime if it has not already been started
-    fn start(&self, runtime: RuntimeWeak) {
+    fn start(&self) {
         let mut expect = self.state.load(Relaxed);
 
         loop {
@@ -137,7 +119,7 @@ impl RuntimeInner {
             expect = actual;
         }
 
-        self.scheduler.start(runtime);
+        self.scheduler.start();
     }
 
     /// Shutdown the runtime waiting up to specified time

@@ -58,12 +58,15 @@ pub fn test_returning_simple_future() {
         producer: None
     });
 
-    /*
+    one.send(1);
+
     let two = sys.spawn(move |&mut: _: uint| -> Val<uint> {
         let tx = tx.clone();
-        one.send(()).map(move |:v| tx.send(v));
+        one.send(1); // .map(move |:v| tx.send(v));
+        unimplemented!()
     });
 
+    /*
     two.send(1u);
     assert_eq!(rx.recv(), 1u);
     */

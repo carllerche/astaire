@@ -1,5 +1,5 @@
 use {Actor};
-use core::{Cell, Event, Runtime, RuntimeWeak};
+use core::{Cell, Event, Runtime};
 use core::rt::Schedule;
 use util::Future;
 use syncbox::{LinkedQueue, Consume, Produce};
@@ -52,10 +52,9 @@ impl Scheduler {
         }
     }
 
-    pub fn start(&self, runtime: RuntimeWeak) {
+    pub fn start(&self) {
         let inner = self.inner.clone();
-
-        spawn(proc() worker_loop(inner, runtime));
+        spawn(proc() worker_loop(inner));
     }
 
     pub fn shutdown(&self, timeout: Duration) {
@@ -109,7 +108,7 @@ enum Op {
 
 // ===== Background worker =====
 
-fn worker_loop(scheduler: Arc<SchedulerInner>, runtime: RuntimeWeak) {
+fn worker_loop(scheduler: Arc<SchedulerInner>) {
     use std::time::Duration;
 
     loop {
@@ -117,21 +116,16 @@ fn worker_loop(scheduler: Arc<SchedulerInner>, runtime: RuntimeWeak) {
 
             match op {
                 Task(scheduled) => {
-                    if let Some(rt) = runtime.upgrade() {
-                        unsafe { SCHEDULED = Some(mem::transmute(&*scheduled)) };
+                    unsafe { SCHEDULED = Some(mem::transmute(&*scheduled)) };
 
-                        // If true, requires reschedule
-                        if scheduled.tick() {
-                            debug!("more work to be done, rescheduling");
-                            scheduler.queue.put(Task(scheduled))
-                                .ok().expect("[BUG] not handled");
-                        }
-
-                        unsafe { SCHEDULED = None };
-                    } else {
-                        // The system has been shutdown, exit worker
-                        break;
+                    // If true, requires reschedule
+                    if scheduled.tick() {
+                        debug!("more work to be done, rescheduling");
+                        scheduler.queue.put(Task(scheduled))
+                            .ok().expect("[BUG] not handled");
                     }
+
+                    unsafe { SCHEDULED = None };
                 }
                 Terminate => break,
             }

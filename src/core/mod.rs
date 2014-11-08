@@ -1,5 +1,5 @@
 pub use self::cell::Cell;
-pub use self::rt::{Runtime, RuntimeWeak};
+pub use self::rt::{Runtime};
 use std::fmt;
 
 mod cell;
