@@ -1,15 +1,15 @@
 // pub use self::stream::Stream;
-pub use self::val::{Val, Producer};
+pub use self::future::{Future, Completer};
 
 // mod stream;
-mod val;
+mod future;
 
-pub trait Future : Send {
+pub trait Async : Send {
     // Invoke the callback with the future on completion
     fn ready<F: Send + FnOnce(Self)>(self, cb: F);
 }
 
-impl Future for () {
+impl Async for () {
     fn ready<F: Send + FnOnce(())>(self, cb: F) {
         cb(self);
     }

@@ -1,23 +1,23 @@
 #![allow(dead_code)]
 
-use super::Future;
+use super::Async;
 use core::rt::{Schedule, currently_scheduled};
 
 use std::mem;
 use std::sync::Arc;
 use syncbox::locks::{MutexCell, MutexCellGuard};
 
-pub struct Val<T> {
-    inner: Option<ValInner<T>>,
+pub struct Future<T> {
+    inner: Option<FutureInner<T>>,
 }
 
-impl<T: Send> Val<T> {
+impl<T: Send> Future<T> {
     // Returns a new future with its producer
-    pub fn pair() -> (Val<T>, Producer<T>) {
-        let inner = ValInner::new();
+    pub fn pair() -> (Future<T>, Completer<T>) {
+        let inner = FutureInner::new();
 
-        let val = Val { inner: Some(inner.clone()) };
-        let producer = Producer { inner: Some(inner) };
+        let val = Future { inner: Some(inner.clone()) };
+        let producer = Completer { inner: Some(inner) };
 
         (val, producer)
     }
@@ -26,25 +26,25 @@ impl<T: Send> Val<T> {
         self.inner.take().unwrap().consumer_unwrap()
     }
 
-    /// Maps the future to Val<U> by applying the provided function
-    pub fn map<U: Send, F: Send + FnOnce(T) -> U>(self, op: F) -> Val<U> {
-        let (ret, p) = Val::pair();
-        self.ready(move |:val: Val<T>| p.put(op(val.unwrap())));
+    /// Maps the future to Future<U> by applying the provided function
+    pub fn map<U: Send, F: Send + FnOnce(T) -> U>(self, op: F) -> Future<U> {
+        let (ret, p) = Future::pair();
+        self.ready(move |:val: Future<T>| p.put(op(val.unwrap())));
         ret
     }
 }
 
-impl<T: Send> Future for Val<T> {
-    fn ready<F: Send + FnOnce(Val<T>)>(mut self, cb: F) {
+impl<T: Send> Async for Future<T> {
+    fn ready<F: Send + FnOnce(Future<T>)>(mut self, cb: F) {
         self.inner.take().unwrap().ready(cb);
     }
 }
 
-pub struct Producer<T> {
-    inner: Option<ValInner<T>>,
+pub struct Completer<T> {
+    inner: Option<FutureInner<T>>,
 }
 
-impl<T: Send> Producer<T> {
+impl<T: Send> Completer<T> {
     pub fn put(mut self, val: T) {
         self.inner.take().unwrap().put(val);
     }
@@ -58,13 +58,13 @@ impl<T: Send> Producer<T> {
 //
 // Currently not tuned for performance and implemented with a mutex. Once the
 // API stabalizes, this will be rewritten using a lock-free strategy.
-struct ValInner<T> {
+struct FutureInner<T> {
     core: Arc<MutexCell<Core<T>>>,
 }
 
-impl<T: Send> ValInner<T> {
-    fn new() -> ValInner<T> {
-        ValInner {
+impl<T: Send> FutureInner<T> {
+    fn new() -> FutureInner<T> {
+        FutureInner {
             core: Arc::new(MutexCell::new(Core::new())),
         }
     }
@@ -79,7 +79,7 @@ impl<T: Send> ValInner<T> {
         panic!("future not realized");
     }
 
-    fn ready<F: Send + FnOnce(Val<T>)>(&self, cb: F) {
+    fn ready<F: Send + FnOnce(Future<T>)>(&self, cb: F) {
         // Acquire the lock
         let mut core = self.lock();
 
@@ -94,7 +94,7 @@ impl<T: Send> ValInner<T> {
         let inner = self.clone();
 
         core.push_consumer_wait(Waiter::new(move |:| {
-            cb(Val { inner: Some(inner) });
+            cb(Future { inner: Some(inner) });
         }));
     }
 
@@ -125,8 +125,8 @@ impl<T: Send> ValInner<T> {
     }
 
     #[inline]
-    fn val(&self) -> Val<T> {
-        Val { inner: Some(self.clone()) }
+    fn val(&self) -> Future<T> {
+        Future { inner: Some(self.clone()) }
     }
 
     #[inline]
@@ -135,9 +135,9 @@ impl<T: Send> ValInner<T> {
     }
 }
 
-impl<T: Send> Clone for ValInner<T> {
-    fn clone(&self) -> ValInner<T> {
-        ValInner { core: self.core.clone() }
+impl<T: Send> Clone for FutureInner<T> {
+    fn clone(&self) -> FutureInner<T> {
+        FutureInner { core: self.core.clone() }
     }
 }
 

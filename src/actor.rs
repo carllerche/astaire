@@ -1,14 +1,14 @@
 use core::{Cell};
-use util::Future;
+use util::Async;
 
-pub trait Actor<Msg: Send, Ret: Future = ()> : Send {
+pub trait Actor<Msg: Send, Ret: Async = ()> : Send {
     fn prepare(&mut self) {
     }
 
     fn receive(&mut self, msg: Msg) -> Ret;
 }
 
-impl<Msg: Send, R: Future, F: Send + FnMut(Msg) -> R> Actor<Msg, R> for F {
+impl<Msg: Send, R: Async, F: Send + FnMut(Msg) -> R> Actor<Msg, R> for F {
     fn receive(&mut self, msg: Msg) -> R {
         self.call_mut((msg,))
     }
@@ -23,7 +23,7 @@ pub struct ActorRef<M, A> {
     cell: Cell<M, A>,
 }
 
-impl<M: Send, A: Actor<M>> ActorRef<M, A> {
+impl<M: Send, R: Async, A: Actor<M, R>> ActorRef<M, A> {
     /// Sends a message to the specified actor
     pub fn send(&self, msg: M) {
         self.cell.send_message(msg);
@@ -31,6 +31,6 @@ impl<M: Send, A: Actor<M>> ActorRef<M, A> {
 }
 
 // Separate fn to keep the ActorRef public API clean
-pub fn new_ref<M, A>(cell: Cell<M, A>) -> ActorRef<M, A> {
+pub fn new_ref<M: Send, R: Async, A: Actor<M, R>>(cell: Cell<M, A>) -> ActorRef<M, A> {
     ActorRef { cell: cell }
 }

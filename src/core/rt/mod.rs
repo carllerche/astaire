@@ -6,7 +6,7 @@
 use {Actor, ActorRef};
 use actor;
 use core::{Cell, Event, Spawn};
-use util::Future;
+use util::Async;
 use std::sync::{Arc};
 use std::sync::atomic::{AtomicUint, Relaxed};
 use std::time::Duration;
@@ -63,12 +63,12 @@ impl Runtime {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    pub fn dispatch<Msg: Send, Ret: Future, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>, event: Event<Msg>) {
+    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>, event: Event<Msg>) {
         self.inner.dispatch(cell, event);
     }
 
     /// Spawn a new actor
-    pub fn spawn<Msg: Send, Ret: Future, A: Actor<Msg, Ret>>(&self, actor: A) -> ActorRef<Msg, A> {
+    pub fn spawn<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, actor: A) -> ActorRef<Msg, A> {
         debug!("spawning actor");
         let cell = Cell::new(actor, self.clone());
         self.inner.dispatch(cell.clone(), Spawn);
@@ -153,7 +153,7 @@ impl RuntimeInner {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    fn dispatch<Msg: Send, Ret: Future, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>, event: Event<Msg>) {
+    fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>, event: Event<Msg>) {
         self.scheduler.dispatch(cell, event);
     }
 }

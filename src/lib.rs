@@ -25,10 +25,10 @@ pub use system::{
 };
 
 pub mod util {
-    pub use core::future::Future;
+    pub use core::future::Async;
 
     pub mod future {
-        pub use core::future::{Val, Producer};
+        pub use core::future::{Future, Completer};
     }
 }
 

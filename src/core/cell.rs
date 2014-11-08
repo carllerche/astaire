@@ -1,6 +1,6 @@
 use {Actor};
 use core::{rt, Event, Spawn, Message, Exec, Runtime};
-use util::Future;
+use util::Async;
 
 use std::cell::UnsafeCell;
 use std::num::FromPrimitive;
@@ -12,7 +12,7 @@ pub struct Cell<Msg, A> {
     inner: Arc<CellInner<Msg, A>>,
 }
 
-impl<Msg: Send, Ret: Future, A: Actor<Msg, Ret>> Cell<Msg, A> {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell<Msg, A> {
     pub fn new(actor: A, runtime: Runtime) -> Cell<Msg, A> {
         Cell {
             inner: Arc::new(CellInner::new(actor, runtime))
@@ -28,7 +28,7 @@ impl<Msg: Send, Ret: Future, A: Actor<Msg, Ret>> Cell<Msg, A> {
     }
 }
 
-impl<Msg: Send, Ret: Future, A: Actor<Msg, Ret>> rt::Schedule for Cell<Msg, A> {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> rt::Schedule for Cell<Msg, A> {
     fn tick(&self) -> bool {
         self.inner.tick()
     }
@@ -44,7 +44,7 @@ impl<Msg: Send, Ret: Future, A: Actor<Msg, Ret>> rt::Schedule for Cell<Msg, A> {
     }
 }
 
-impl<Msg: Send, Ret: Future, A: Actor<Msg, Ret>> Clone for Cell<Msg, A> {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Clone for Cell<Msg, A> {
     fn clone(&self) -> Cell<Msg, A> {
         Cell { inner: self.inner.clone() }
     }
@@ -70,7 +70,7 @@ struct CellInner<Msg, A> {
     sys_mailbox: LinkedQueue<Event<Msg>>,
 }
 
-impl<Msg: Send, Ret: Future, A: Actor<Msg, Ret>> CellInner<Msg, A> {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<Msg, A> {
     fn new(actor: A, runtime: Runtime) -> CellInner<Msg, A> {
         CellInner {
             actor: UnsafeCell::new(actor),

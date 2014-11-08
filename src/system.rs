@@ -1,6 +1,6 @@
 use {Actor, ActorRef};
 use core::{Runtime};
-use util::Future;
+use util::Async;
 use std::i64;
 use std::time::Duration;
 
@@ -34,7 +34,7 @@ impl System {
         self.runtime.shutdown(timeout);
     }
 
-    pub fn spawn<M: Send, Ret: Future, A: Actor<M, Ret>>(&self, actor: A) -> ActorRef<M, A> {
+    pub fn spawn<M: Send, Ret: Async, A: Actor<M, Ret>>(&self, actor: A) -> ActorRef<M, A> {
         self.start(); // Ensure that the system is running
         self.runtime.spawn(actor)
     }
