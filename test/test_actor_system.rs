@@ -63,7 +63,7 @@ pub fn test_prepare_is_invoked_on_spawn() {
 pub fn test_sending_messages_between_actors() {
     struct Proxy<A>(A);
 
-    impl<A: Actor<uint>> Actor<uint> for Proxy<ActorRef<uint, A>> {
+    impl<A: Actor<uint>> Actor<uint> for Proxy<ActorRef<A, uint, ()>> {
         fn receive(&mut self, msg: uint) {
             let Proxy(ref dst) = *self;
             debug!("proxy actor receiving {}", msg);
@@ -105,8 +105,8 @@ pub fn test_sending_to_generic_actors() {
 pub fn test_sending_actor_ref_in_message() {
     struct Forward;
 
-    impl<M: Send, A: Actor<M>> Actor<(M, ActorRef<M, A>)> for Forward {
-        fn receive(&mut self, (msg, dst): (M, ActorRef<M, A>)) {
+    impl<M: Send, A: Actor<M>> Actor<(M, ActorRef<A, M, ()>)> for Forward {
+        fn receive(&mut self, (msg, dst): (M, ActorRef<A, M, ()>)) {
             dst.send(msg);
         }
     }

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use super::Async;
+use super::{Async, Request, Response};
 use core::rt::{Schedule, currently_scheduled};
 
 use std::mem;
@@ -16,10 +16,10 @@ impl<T: Send> Future<T> {
     pub fn pair() -> (Future<T>, Completer<T>) {
         let inner = FutureInner::new();
 
-        let val = Future { inner: Some(inner.clone()) };
-        let producer = Completer { inner: Some(inner) };
+        let future = Future { inner: Some(inner.clone()) };
+        let completer = Completer { inner: Some(inner) };
 
-        (val, producer)
+        (future, completer)
     }
 
     pub fn unwrap(mut self) -> T {
@@ -37,6 +37,20 @@ impl<T: Send> Future<T> {
 impl<T: Send> Async for Future<T> {
     fn ready<F: Send + FnOnce(Future<T>)>(mut self, cb: F) {
         self.inner.take().unwrap().ready(cb);
+    }
+
+    fn request<Msg>(msg: Msg) -> (Request<Msg, Future<T>>, Future<T>) {
+        let inner = FutureInner::new();
+
+        let one = Future { inner: Some(inner.clone()) };
+        let two = Future { inner: Some(inner) };
+
+        (Request::new(msg, one), two)
+    }
+
+    fn link(mut self, resp: Response<Future<T>>) {
+        let Response { mut async } = resp;
+        self.inner.take().unwrap().link(async.inner.take().unwrap());
     }
 }
 
@@ -93,12 +107,14 @@ impl<T: Send> FutureInner<T> {
 
         let inner = self.clone();
 
-        core.push_consumer_wait(Waiter::new(move |:| {
+        core.push_consumer_wait(Waiter::callback(move |:| {
             cb(Future { inner: Some(inner) });
         }));
     }
 
     fn put(&self, val: T) {
+        debug!("completing future");
+
         // Acquire the lock
         let mut core = self.lock();
 
@@ -111,16 +127,34 @@ impl<T: Send> FutureInner<T> {
             for waiter in waiters.into_iter() {
                 // Make sure that the waiter has not been canceled
                 if let Some(waiter) = waiter {
-                    // Release the lock
-                    drop(core);
                     // Invoke the waiter
-                    waiter.invoke();
+                    waiter.invoke(core);
                     // Reacquire the lock
                     core = self.lock();
                 }
             }
 
             return;
+        }
+    }
+
+    // Proxy self's value completion to other
+    fn link(&self, other: FutureInner<T>) {
+        debug!("linking two future values");
+
+        let mut core1 = self.lock();
+
+        if core1.state.is_ready() {
+            debug!("  source future is ready");
+            let mut core2 = other.lock();
+            // The source future has already been completed, consume the value
+            // and place it into the destination future
+            core2.put(core1.take());
+        } else {
+            debug!("  source future is pending");
+            // The source future has not been completed yet, place a completion
+            // callback to place the value into the destination future.
+            core1.push_consumer_wait(Waiter::link(other));
         }
     }
 
@@ -159,6 +193,10 @@ impl<T: Send> Core<T> {
         self.val = Some(val);
     }
 
+    fn take(&mut self) -> T {
+        mem::replace(&mut self.val, None).expect("future not completed")
+    }
+
     fn take_consumer_wait(&mut self) -> State<T> {
         if self.state.is_consumer_wait() {
             mem::replace(&mut self.state, Complete)
@@ -179,18 +217,32 @@ impl<T: Send> Core<T> {
     }
 }
 
-struct Waiter<T> {
-    callback: Box<FnOnce<(),()> + Send>,
+// TODO: rename -> Wait
+enum Waiter<T> {
+    Callback(Box<FnOnce<(),()> + Send>),
+    Link(FutureInner<T>),
 }
 
 impl<T: Send> Waiter<T> {
-    fn new<F: FnOnce() + Send>(cb: F) -> Waiter<T> {
+    fn callback<F: FnOnce() + Send>(cb: F) -> Waiter<T> {
         let cb = unsafe { currently_scheduled().unwrap().schedule(box cb) };
-        Waiter { callback: cb }
+        Callback(cb)
     }
 
-    fn invoke(self) {
-        self.callback.call_once(());
+    fn link(other: FutureInner<T>) -> Waiter<T> {
+        Link(other)
+    }
+
+    fn invoke(self, mut core: MutexCellGuard<Core<T>>) {
+        match self {
+            Callback(cb) => {
+                drop(core); // Release the lock
+                cb.call_once(())
+            }
+            Link(other) => {
+                other.put(core.take());
+            }
+        }
     }
 }
 

@@ -7,8 +7,8 @@ pub fn test_sending_simple_future() {
 
     struct Simple(Sender<uint>);
 
-    impl<A: Actor<Completer<uint>>> Actor<ActorRef<Completer<uint>, A>> for Simple {
-        fn receive(&mut self, other: ActorRef<Completer<uint>, A>) {
+    impl<A: Actor<Completer<uint>>> Actor<ActorRef<A, Completer<uint>, ()>> for Simple {
+        fn receive(&mut self, other: ActorRef<A, Completer<uint>, ()>) {
             let (f, p) = Future::pair();
             let Simple(ref tx) = *self;
             let tx = tx.clone();
@@ -28,7 +28,6 @@ pub fn test_sending_simple_future() {
 }
 
 #[test]
-#[ignore]
 pub fn test_returning_simple_future() {
     use std::mem;
 
@@ -37,9 +36,17 @@ pub fn test_returning_simple_future() {
         producer: Option<Completer<uint>>,
     }
 
+    impl Drop for Simple {
+        fn drop(&mut self) {
+            println!("Simple::drop ~~~~~~~~~~~");
+        }
+    }
+
     // This error seems to be related to the presence of the return type
     impl Actor<uint, Future<uint>> for Simple {
         fn receive(&mut self, _: uint) -> Future<uint> {
+            println!("Simple::receive ~~~~~~~~~~~~~~");
+
             let (f, p) = Future::pair();
 
             if let Some(p) = mem::replace(&mut self.producer, Some(p)) {
@@ -59,14 +66,44 @@ pub fn test_returning_simple_future() {
         producer: None
     });
 
-    let two = sys.spawn(move |&mut: _: uint| -> Future<uint> {
-        let tx = tx.clone();
-        // one.send(1).map(move |:v| tx.send(v));
-        unimplemented!()
-    });
+    struct Root(ActorRef<Simple, uint, Future<uint>>, Sender<uint>);
+
+    impl Actor<uint, ()> for Root {
+        fn receive(&mut self, _: uint) {
+            let Root(ref one, ref tx) = *self;
+            let tx = tx.clone();
+            println!("actor two receive ~~~~~~~~~~~~~~~");
+
+            let tx = tx.clone();
+            one.send(1).map(move |:v| {
+                println!("future completion ~~~~~~~~~~~~~");
+                tx.send(v)
+            });
+        }
+    }
+
+    impl Drop for Root {
+        fn drop(&mut self) {
+            println!("Root::drop ~~~~~~~~~~~~~~~");
+        }
+    }
+
+    let two = sys.spawn(Root(one, tx));
 
     /*
-    two.send(1u);
-    assert_eq!(rx.recv(), 1u);
+    let two = sys.spawn(move |&mut: _: uint| {
+        println!("actor two receive ~~~~~~~~~~~~~~~");
+
+        let tx = tx.clone();
+        one.send(1).map(move |:v| {
+            println!("future completion ~~~~~~~~~~~~~");
+            tx.send(v)
+        });
+    });
     */
+
+    two.send(1u);
+    two.send(2u);
+    assert_eq!(rx.recv(), 1u);
+    println!("~~~~~~~~ DONE ~~~~~~~~~~");
 }

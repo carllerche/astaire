@@ -62,7 +62,7 @@ impl Scheduler {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>, event: Event<Msg>) {
+    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
         debug!("dispatching event to cell");
         if cell.deliver_event(event) {
             debug!("  cell requires scheduling");
@@ -90,7 +90,7 @@ impl SchedulerInner {
     }
 
     // Schedule the actor for execution[
-    fn schedule_actor<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>) {
+    fn schedule_actor<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>) {
         // self.enqueue(Task(proc() -> bool { cell.tick() }));
         self.enqueue(Task(box cell as Box<Schedule + Send>));
     }
@@ -112,6 +112,7 @@ fn worker_loop(scheduler: Arc<SchedulerInner>) {
     use std::time::Duration;
 
     loop {
+        debug!("queue wait");
         if let Some(op) = scheduler.queue.take_wait(Duration::seconds(120)) {
 
             match op {
@@ -125,12 +126,14 @@ fn worker_loop(scheduler: Arc<SchedulerInner>) {
                             .ok().expect("[BUG] not handled");
                     }
 
-                    unsafe { SCHEDULED = None };
+                    unsafe { SCHEDULED = None; }
                 }
                 Terminate => break,
             }
         }
     }
+
+    debug!("terminating worker thread");
 
     let mut lock = scheduler.state.lock();
 

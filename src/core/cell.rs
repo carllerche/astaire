@@ -1,5 +1,6 @@
 use {Actor};
 use core::{rt, Event, Spawn, Message, Exec, Runtime};
+use core::future::Request;
 use util::Async;
 
 use std::cell::UnsafeCell;
@@ -8,27 +9,27 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUint, Relaxed};
 use syncbox::{Consume, Produce, LinkedQueue};
 
-pub struct Cell<Msg, A> {
-    inner: Arc<CellInner<Msg, A>>,
+pub struct Cell<A, M: Send, R: Async> {
+    inner: Arc<CellInner<A, M, R>>,
 }
 
-impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell<Msg, A> {
-    pub fn new(actor: A, runtime: Runtime) -> Cell<Msg, A> {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell<A, Msg, Ret> {
+    pub fn new(actor: A, runtime: Runtime) -> Cell<A, Msg, Ret> {
         Cell {
             inner: Arc::new(CellInner::new(actor, runtime))
         }
     }
 
-    pub fn send_message(&self, msg: Msg) {
-        self.inner.send_message(msg, self.clone());
+    pub fn send_request(&self, request: Request<Msg, Ret>) {
+        self.inner.send_request(request, self.clone());
     }
 
-    pub fn deliver_event(&self, event: Event<Msg>) -> bool {
+    pub fn deliver_event(&self, event: Event<Msg, Ret>) -> bool {
         self.inner.deliver_event(event)
     }
 }
 
-impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> rt::Schedule for Cell<Msg, A> {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> rt::Schedule for Cell<A, Msg, Ret> {
     fn tick(&self) -> bool {
         self.inner.tick()
     }
@@ -44,8 +45,8 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> rt::Schedule for Cell<Msg, A> {
     }
 }
 
-impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Clone for Cell<Msg, A> {
-    fn clone(&self) -> Cell<Msg, A> {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Clone for Cell<A, Msg, Ret> {
+    fn clone(&self) -> Cell<A, Msg, Ret> {
         Cell { inner: self.inner.clone() }
     }
 }
@@ -57,7 +58,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Clone for Cell<Msg, A> {
 //   mut safety.
 // - The cell needs to know which runtime it is from, but using std::Arc is
 //   pretty heavy. Migrate to a version that keeps thread local ref counts.
-struct CellInner<Msg, A> {
+struct CellInner<A, M: Send, R: Async> {
     // The actor that the cell is powering
     actor: UnsafeCell<A>,
     // The state of the actor
@@ -65,13 +66,13 @@ struct CellInner<Msg, A> {
     // The runtime that the actor belongs to
     runtime: Runtime,
     // The mailbox for all user level messages
-    mailbox: LinkedQueue<Event<Msg>>,
+    mailbox: LinkedQueue<Event<M, R>>,
     // THe mailbox for all system messages
-    sys_mailbox: LinkedQueue<Event<Msg>>,
+    sys_mailbox: LinkedQueue<Event<M, R>>,
 }
 
-impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<Msg, A> {
-    fn new(actor: A, runtime: Runtime) -> CellInner<Msg, A> {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
+    fn new(actor: A, runtime: Runtime) -> CellInner<A, Msg, Ret> {
         CellInner {
             actor: UnsafeCell::new(actor),
             state: AtomicUint::new(Init as uint),
@@ -81,14 +82,14 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<Msg, A> {
         }
     }
 
-    pub fn send_message(&self, msg: Msg, cell: Cell<Msg, A>) {
+    pub fn send_request(&self, request: Request<Msg, Ret>, cell: Cell<A, Msg, Ret>) {
         debug!("sending message");
-        self.runtime.dispatch(cell, Event::message(msg));
+        self.runtime.dispatch(cell, Event::message(request));
     }
 
     // Atomically enqueues the message and returns whether or not the actor
     // should be scheduled.
-    fn deliver_event(&self, event: Event<Msg>) -> bool {
+    fn deliver_event(&self, event: Event<Msg, Ret>) -> bool {
         // Track if the event is a spawn
         let spawn = event.is_spawn();
 
@@ -134,7 +135,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<Msg, A> {
         }
     }
 
-    fn enqueue_event(&self, event: Event<Msg>) {
+    fn enqueue_event(&self, event: Event<Msg, Ret>) {
         // TODO: Handle error
         if event.is_message() {
             self.mailbox.put(event).ok().unwrap();
@@ -216,7 +217,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<Msg, A> {
         return false;
     }
 
-    fn process_event(&self, event: Event<Msg>) {
+    fn process_event(&self, event: Event<Msg, Ret>) {
         debug!("processing event; event={}", event);
 
         match event {
@@ -226,8 +227,9 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<Msg, A> {
         }
     }
 
-    fn receive_msg(&self, msg: Msg) {
-        self.actor().receive(msg);
+    fn receive_msg(&self, request: Request<Msg, Ret>) {
+        let Request { message, response } = request;
+        self.actor().receive(message).link(response);
     }
 
     // Pretty hacky

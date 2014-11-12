@@ -1,11 +1,11 @@
 use {Actor, ActorRef};
-use core::{Runtime};
+use core::Runtime;
 use util::Async;
 use std::i64;
 use std::time::Duration;
 
 /// Spawns a new actor. Must be called from an actor.
-pub fn spawn<M: Send, A: Actor<M>>(actor: A) -> ActorRef<M, A> {
+pub fn spawn<M: Send, R: Async, A: Actor<M, R>>(actor: A) -> ActorRef<A, M, R> {
     Runtime::current().spawn(actor)
 }
 
@@ -34,7 +34,7 @@ impl System {
         self.runtime.shutdown(timeout);
     }
 
-    pub fn spawn<M: Send, Ret: Async, A: Actor<M, Ret>>(&self, actor: A) -> ActorRef<M, A> {
+    pub fn spawn<M: Send, Ret: Async, A: Actor<M, Ret>>(&self, actor: A) -> ActorRef<A, M, Ret> {
         self.start(); // Ensure that the system is running
         self.runtime.spawn(actor)
     }

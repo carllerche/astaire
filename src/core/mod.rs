@@ -1,5 +1,6 @@
 pub use self::cell::Cell;
 pub use self::rt::{Runtime};
+use self::future::{Async, Request};
 use std::fmt;
 
 mod cell;
@@ -10,18 +11,18 @@ pub trait Coordinator {
     fn dispatch(/*recipient: Cell*/);
 }
 
-enum Event<M> {
-    Message(M),
+enum Event<M: Send, R: Async> {
+    Message(Request<M, R>),
     Spawn,
     Exec(Box<FnOnce<(),()> + Send>),
 }
 
-impl<T> Event<T> {
-    fn message(message: T) -> Event<T> {
+impl<M: Send, R: Async> Event<M, R> {
+    fn message(message: Request<M, R>) -> Event<M, R> {
         Message(message)
     }
 
-    fn exec(f: Box<FnOnce<(),()> + Send>) -> Event<T> {
+    fn exec(f: Box<FnOnce<(),()> + Send>) -> Event<M, R> {
         Exec(f)
     }
 
@@ -40,7 +41,7 @@ impl<T> Event<T> {
     }
 }
 
-impl<T> fmt::Show for Event<T> {
+impl<M: Send, R: Async> fmt::Show for Event<M, R> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Message(..) => write!(fmt, "Message"),

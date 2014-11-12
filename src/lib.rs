@@ -14,10 +14,8 @@ extern crate syncbox;
 #[phase(plugin, link)]
 extern crate log;
 
-pub use actor::{
-    Actor,
-    ActorRef,
-};
+pub use actor::Actor;
+pub use actor_ref::ActorRef;
 
 pub use system::{
     System,
@@ -34,4 +32,5 @@ pub mod util {
 
 mod core;
 mod actor;
+mod actor_ref;
 mod system;

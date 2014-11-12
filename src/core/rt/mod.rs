@@ -4,7 +4,7 @@
 //! different implementations for development, test, and production modes.
 
 use {Actor, ActorRef};
-use actor;
+use actor_ref;
 use core::{Cell, Event, Spawn};
 use util::Async;
 use std::sync::{Arc};
@@ -63,16 +63,16 @@ impl Runtime {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>, event: Event<Msg>) {
+    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
         self.inner.dispatch(cell, event);
     }
 
     /// Spawn a new actor
-    pub fn spawn<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, actor: A) -> ActorRef<Msg, A> {
+    pub fn spawn<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, actor: A) -> ActorRef<A, Msg, Ret> {
         debug!("spawning actor");
         let cell = Cell::new(actor, self.clone());
         self.inner.dispatch(cell.clone(), Spawn);
-        actor::new_ref(cell)
+        actor_ref::new(cell)
     }
 }
 
@@ -153,13 +153,14 @@ impl RuntimeInner {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<Msg, A>, event: Event<Msg>) {
+    fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
         self.scheduler.dispatch(cell, event);
     }
 }
 
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
+        debug!("dropping RuntimeInner");
         self.scheduler.shutdown(Duration::milliseconds(0));
     }
 }
