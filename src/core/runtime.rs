@@ -5,39 +5,11 @@
 
 use {Actor, ActorRef};
 use actor_ref;
-use core::{Cell, Event, Spawn};
+use core::{Cell, Event, Spawn, Scheduler, currently_scheduled};
 use util::Async;
-use std::sync::{Arc};
+use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicUint, Relaxed};
 use std::time::Duration;
-
-use self::scheduler::Scheduler;
-pub use self::scheduler::currently_scheduled;
-
-#[cfg(ndebug)]
-mod scheduler;
-
-#[cfg(not(ndebug))]
-#[path = "scheduler_dev.rs"]
-mod scheduler;
-
-pub trait Schedule {
-    // Scheduler tick, returns whether ot not to reschedule for another
-    // iteration.
-    fn tick(&self) -> bool;
-
-    // Schedule the function to execute in the context of this schedulable type
-    fn schedule(&self, f: Box<FnOnce<(),()> + Send>) -> Box<FnOnce<(),()> + Send>;
-
-    fn runtime(&self) -> Runtime;
-}
-
-/*
-/// Gets the system for the current thread
-pub fn current_system<'a>() -> &'a System {
-    scheduler::current_system()
-}
-*/
 
 pub struct Runtime {
     inner: Arc<RuntimeInner>,
@@ -51,7 +23,12 @@ impl Runtime {
     }
 
     pub fn current() -> Runtime {
-        scheduler::current_runtime().clone()
+        unsafe {
+            match currently_scheduled() {
+                Some(s) => s.runtime().clone(),
+                None => panic!("must be called in context of an actor"),
+            }
+        }
     }
 
     pub fn start(&self) {
@@ -70,9 +47,13 @@ impl Runtime {
     /// Spawn a new actor
     pub fn spawn<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, actor: A) -> ActorRef<A, Msg, Ret> {
         debug!("spawning actor");
-        let cell = Cell::new(actor, self.clone());
+        let cell = Cell::new(actor, self.weak());
         self.inner.dispatch(cell.clone(), Spawn);
         actor_ref::new(cell)
+    }
+
+    fn weak(&self) -> RuntimeWeak {
+        RuntimeWeak::new(self.inner.downgrade())
     }
 }
 
@@ -82,9 +63,31 @@ impl Clone for Runtime {
     }
 }
 
+pub struct RuntimeWeak {
+    inner: Weak<RuntimeInner>,
+}
+
+impl RuntimeWeak {
+    fn new(inner: Weak<RuntimeInner>) -> RuntimeWeak {
+        RuntimeWeak { inner: inner }
+    }
+
+    pub fn upgrade(&self) -> Option<Runtime> {
+        self.inner.upgrade()
+            .map(|inner| Runtime { inner: inner })
+    }
+}
+
+/*
+ *
+ * ===== Implementation =====
+ *
+ */
+
 struct RuntimeInner {
     state: AtomicUint,
-    scheduler: scheduler::Scheduler,
+    scheduler: Scheduler,
+    // init: Cell<Init, (), ()>,
 }
 
 impl RuntimeInner {

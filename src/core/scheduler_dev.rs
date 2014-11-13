@@ -1,6 +1,6 @@
 use {Actor};
-use core::{Cell, Event, Runtime};
-use core::rt::Schedule;
+use core::{Cell, Event};
+use core::Schedule;
 use util::Async;
 use syncbox::{LinkedQueue, Consume, Produce};
 use syncbox::locks::{MutexCell, CondVar};
@@ -27,15 +27,6 @@ pub struct SchedulerInner {
 
 #[thread_local]
 static mut SCHEDULED: Option<&'static Schedule+Send+'static> = None;
-
-pub fn current_runtime<'a>() -> Runtime {
-    unsafe {
-        match currently_scheduled() {
-            Some(s) => s.runtime(),
-            None => panic!("must be called in context of an actor"),
-        }
-    }
-}
 
 pub unsafe fn currently_scheduled<'a>() -> Option<&'a Schedule+'static> {
     SCHEDULED.map(|r| mem::transmute(r))

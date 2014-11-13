@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use super::{Async, Request, Response};
-use core::rt::{Schedule, currently_scheduled};
+use core::{Schedule, currently_scheduled};
 
 use std::mem;
 use std::sync::Arc;

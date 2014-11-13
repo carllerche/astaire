@@ -1,5 +1,5 @@
 use {Actor};
-use core::{rt, Event, Spawn, Message, Exec, Runtime};
+use core::{Event, Schedule, Spawn, Message, Exec, Runtime, RuntimeWeak};
 use core::future::Request;
 use util::Async;
 
@@ -14,7 +14,7 @@ pub struct Cell<A, M: Send, R: Async> {
 }
 
 impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell<A, Msg, Ret> {
-    pub fn new(actor: A, runtime: Runtime) -> Cell<A, Msg, Ret> {
+    pub fn new(actor: A, runtime: RuntimeWeak) -> Cell<A, Msg, Ret> {
         Cell {
             inner: Arc::new(CellInner::new(actor, runtime))
         }
@@ -29,7 +29,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell<A, Msg, Ret> {
     }
 }
 
-impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> rt::Schedule for Cell<A, Msg, Ret> {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Schedule for Cell<A, Msg, Ret> {
     fn tick(&self) -> bool {
         self.inner.tick()
     }
@@ -41,7 +41,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> rt::Schedule for Cell<A, Msg, Re
     }
 
     fn runtime(&self) -> Runtime {
-        self.inner.runtime.clone()
+        self.inner.runtime().clone()
     }
 }
 
@@ -64,7 +64,7 @@ struct CellInner<A, M: Send, R: Async> {
     // The state of the actor
     state: AtomicUint,
     // The runtime that the actor belongs to
-    runtime: Runtime,
+    runtime: RuntimeWeak,
     // The mailbox for all user level messages
     mailbox: LinkedQueue<Event<M, R>>,
     // THe mailbox for all system messages
@@ -72,7 +72,7 @@ struct CellInner<A, M: Send, R: Async> {
 }
 
 impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
-    fn new(actor: A, runtime: Runtime) -> CellInner<A, Msg, Ret> {
+    fn new(actor: A, runtime: RuntimeWeak) -> CellInner<A, Msg, Ret> {
         CellInner {
             actor: UnsafeCell::new(actor),
             state: AtomicUint::new(Init as uint),
@@ -84,7 +84,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
 
     pub fn send_request(&self, request: Request<Msg, Ret>, cell: Cell<A, Msg, Ret>) {
         debug!("sending message");
-        self.runtime.dispatch(cell, Event::message(request));
+        self.runtime().dispatch(cell, Event::message(request));
     }
 
     // Atomically enqueues the message and returns whether or not the actor
@@ -230,6 +230,11 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     fn receive_msg(&self, request: Request<Msg, Ret>) {
         let Request { message, response } = request;
         self.actor().receive(message).link(response);
+    }
+
+    fn runtime(&self) -> Runtime {
+        self.runtime.upgrade()
+            .expect("[BUG] runtime has been finalized").clone()
     }
 
     // Pretty hacky
