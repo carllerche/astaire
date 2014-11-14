@@ -1,4 +1,4 @@
-pub use self::cell::Cell;
+pub use self::actor_cell::ActorCell;
 pub use self::runtime::{Runtime, RuntimeWeak};
 pub use self::scheduler::{Scheduler, currently_scheduled};
 use self::future::{Async, Request};
@@ -6,7 +6,7 @@ use std::fmt;
 
 pub mod future;
 
-mod cell;
+mod actor_cell;
 mod runtime;
 
 #[cfg(ndebug)]

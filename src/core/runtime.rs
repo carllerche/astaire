@@ -5,7 +5,7 @@
 
 use {Actor, ActorRef};
 use actor_ref;
-use core::{Cell, Event, Spawn, Scheduler, currently_scheduled};
+use core::{ActorCell, Event, Spawn, Scheduler, currently_scheduled};
 use util::Async;
 use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicUint, Relaxed};
@@ -40,14 +40,14 @@ impl Runtime {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
+    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: ActorCell<A, Msg, Ret>, event: Event<Msg, Ret>) {
         self.inner.dispatch(cell, event);
     }
 
     /// Spawn a new actor
     pub fn spawn<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, actor: A) -> ActorRef<A, Msg, Ret> {
         debug!("spawning actor");
-        let cell = Cell::new(actor, self.weak());
+        let cell = ActorCell::new(actor, self.weak());
         self.inner.dispatch(cell.clone(), Spawn);
         actor_ref::new(cell)
     }
@@ -87,7 +87,7 @@ impl RuntimeWeak {
 struct RuntimeInner {
     state: AtomicUint,
     scheduler: Scheduler,
-    // init: Cell<Init, (), ()>,
+    // init: ActorCell<Init, (), ()>,
 }
 
 impl RuntimeInner {
@@ -156,7 +156,7 @@ impl RuntimeInner {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
+    fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: ActorCell<A, Msg, Ret>, event: Event<Msg, Ret>) {
         self.scheduler.dispatch(cell, event);
     }
 }

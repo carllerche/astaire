@@ -9,13 +9,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUint, Relaxed};
 use syncbox::{Consume, Produce, LinkedQueue};
 
-pub struct Cell<A, M: Send, R: Async> {
+pub struct ActorCell<A, M: Send, R: Async> {
     inner: Arc<CellInner<A, M, R>>,
 }
 
-impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell<A, Msg, Ret> {
-    pub fn new(actor: A, runtime: RuntimeWeak) -> Cell<A, Msg, Ret> {
-        Cell {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> ActorCell<A, Msg, Ret> {
+    pub fn new(actor: A, runtime: RuntimeWeak) -> ActorCell<A, Msg, Ret> {
+        ActorCell {
             inner: Arc::new(CellInner::new(actor, runtime))
         }
     }
@@ -29,7 +29,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell<A, Msg, Ret> {
     }
 }
 
-impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Schedule for Cell<A, Msg, Ret> {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Schedule for ActorCell<A, Msg, Ret> {
     fn tick(&self) -> bool {
         self.inner.tick()
     }
@@ -45,9 +45,9 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Schedule for Cell<A, Msg, Ret> {
     }
 }
 
-impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Clone for Cell<A, Msg, Ret> {
-    fn clone(&self) -> Cell<A, Msg, Ret> {
-        Cell { inner: self.inner.clone() }
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Clone for ActorCell<A, Msg, Ret> {
+    fn clone(&self) -> ActorCell<A, Msg, Ret> {
+        ActorCell { inner: self.inner.clone() }
     }
 }
 
@@ -67,8 +67,10 @@ struct CellInner<A, M: Send, R: Async> {
     runtime: RuntimeWeak,
     // The mailbox for all user level messages
     mailbox: LinkedQueue<Event<M, R>>,
-    // THe mailbox for all system messages
+    // The mailbox for all system messages
     sys_mailbox: LinkedQueue<Event<M, R>>,
+    // Supervised actors
+    // children: Vec<Box<Cell>>,
 }
 
 impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
@@ -79,10 +81,11 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
             runtime: runtime,
             mailbox: LinkedQueue::new(),
             sys_mailbox: LinkedQueue::new(),
+            // children: vec![],
         }
     }
 
-    pub fn send_request(&self, request: Request<Msg, Ret>, cell: Cell<A, Msg, Ret>) {
+    pub fn send_request(&self, request: Request<Msg, Ret>, cell: ActorCell<A, Msg, Ret>) {
         debug!("sending message");
         self.runtime().dispatch(cell, Event::message(request));
     }
@@ -146,7 +149,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
 
     // Execute a single iteration of the actor
     fn tick(&self) -> bool {
-        debug!("Cell::tick");
+        debug!("ActorCell::tick");
 
         // Transition the cell to the running state
         let mut expect = self.state.load(Relaxed);
@@ -200,7 +203,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     }
 
     fn process_queue(&self) -> bool {
-        debug!("Cell::process_queue");
+        debug!("ActorCell::process_queue");
 
         // First process all system events
         while let Some(event) = self.sys_mailbox.take() {

@@ -1,5 +1,5 @@
 use {Actor};
-use core::{Cell, Event};
+use core::{ActorCell, Event};
 use core::Schedule;
 use util::Async;
 use syncbox::{LinkedQueue, Consume, Produce};
@@ -53,7 +53,7 @@ impl Scheduler {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
+    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: ActorCell<A, Msg, Ret>, event: Event<Msg, Ret>) {
         debug!("dispatching event to cell");
         if cell.deliver_event(event) {
             debug!("  cell requires scheduling");
@@ -81,7 +81,7 @@ impl SchedulerInner {
     }
 
     // Schedule the actor for execution[
-    fn schedule_actor<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>) {
+    fn schedule_actor<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: ActorCell<A, Msg, Ret>) {
         // self.enqueue(Task(proc() -> bool { cell.tick() }));
         self.enqueue(Task(box cell as Box<Schedule + Send>));
     }

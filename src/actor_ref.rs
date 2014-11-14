@@ -1,5 +1,5 @@
 use {Actor};
-use core::Cell;
+use core::ActorCell;
 use core::future::Request;
 use util::{Async};
 
@@ -9,7 +9,7 @@ use util::{Async};
 // - Inlined refs (no message dispatching)
 // - Remote refs pointing to actors in other systems
 pub struct ActorRef<A, M: Send, R: Async> {
-    cell: Cell<A, M, R>,
+    cell: ActorCell<A, M, R>,
 }
 
 impl<M: Send, R: Async, A: Actor<M, R>> ActorRef<A, M, R> {
@@ -22,6 +22,6 @@ impl<M: Send, R: Async, A: Actor<M, R>> ActorRef<A, M, R> {
 }
 
 // Separate fn to keep the ActorRef public API clean
-pub fn new<M: Send, R: Async, A: Actor<M, R>>(cell: Cell<A, M, R>) -> ActorRef<A, M, R> {
+pub fn new<M: Send, R: Async, A: Actor<M, R>>(cell: ActorCell<A, M, R>) -> ActorRef<A, M, R> {
     ActorRef { cell: cell }
 }
