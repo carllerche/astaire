@@ -1,4 +1,4 @@
-pub use self::actor_cell::ActorCell;
+pub use self::cell::{ActorCell, Cell};
 pub use self::runtime::{Runtime, RuntimeWeak};
 pub use self::scheduler::{Scheduler, currently_scheduled};
 use self::future::{Async, Request};
@@ -6,7 +6,7 @@ use std::fmt;
 
 pub mod future;
 
-mod actor_cell;
+mod cell;
 mod runtime;
 
 #[cfg(ndebug)]
@@ -15,17 +15,6 @@ mod scheduler;
 #[cfg(not(ndebug))]
 #[path = "scheduler_dev.rs"]
 mod scheduler;
-
-pub trait Schedule {
-    // Scheduler tick, returns whether ot not to reschedule for another
-    // iteration.
-    fn tick(&self) -> bool;
-
-    // Schedule the function to execute in the context of this schedulable type
-    fn schedule(&self, f: Box<FnOnce<(),()> + Send>) -> Box<FnOnce<(),()> + Send>;
-
-    fn runtime(&self) -> Runtime;
-}
 
 enum Event<M: Send, R: Async> {
     Message(Request<M, R>),

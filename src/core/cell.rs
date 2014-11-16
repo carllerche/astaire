@@ -1,16 +1,45 @@
 use {Actor};
-use core::{Event, Schedule, Spawn, Message, Exec, Runtime, RuntimeWeak};
+use core::{Event, Spawn, Message, Exec, Runtime, RuntimeWeak};
 use core::future::Request;
 use util::Async;
 
 use std::cell::UnsafeCell;
+use std::mem;
 use std::num::FromPrimitive;
+use std::raw::TraitObject;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUint, Relaxed};
 use syncbox::{Consume, Produce, LinkedQueue};
 
 pub struct ActorCell<A, M: Send, R: Async> {
     inner: Arc<CellInner<A, M, R>>,
+}
+
+// The functions that need to be accessible via trait object
+pub trait Cell : Send + Sync {
+    // Scheduler tick, returns whether ot not to reschedule for another
+    // iteration.
+    fn tick(&self) -> bool;
+
+    // Schedule the function to execute in the context of this schedulable type
+    fn schedule(&self, f: Box<FnOnce<(),()> + Send>) -> Box<FnOnce<(),()> + Send>;
+
+    // Get the runtime behind this cell
+    fn runtime(&self) -> Runtime;
+}
+
+struct CellRef {
+    cell: TraitObject,
+}
+
+impl CellRef {
+    fn new(cell: &Cell) -> CellRef {
+        CellRef { cell: unsafe { mem::transmute(cell) } }
+    }
+
+    fn cell(&self) -> &Cell {
+        unsafe { mem::transmute(self.cell) }
+    }
 }
 
 impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> ActorCell<A, Msg, Ret> {
@@ -29,7 +58,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> ActorCell<A, Msg, Ret> {
     }
 }
 
-impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Schedule for ActorCell<A, Msg, Ret> {
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell for ActorCell<A, Msg, Ret> {
     fn tick(&self) -> bool {
         self.inner.tick()
     }
@@ -69,8 +98,10 @@ struct CellInner<A, M: Send, R: Async> {
     mailbox: LinkedQueue<Event<M, R>>,
     // The mailbox for all system messages
     sys_mailbox: LinkedQueue<Event<M, R>>,
-    // Supervised actors
-    // children: Vec<Box<Cell>>,
+    // The supervisor
+    supervisor: Option<CellRef>,
+    // Supervised actors - TODO: Not the right types
+    children: Vec<Box<Cell+Send+Sync>>,
 }
 
 impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
@@ -81,7 +112,8 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
             runtime: runtime,
             mailbox: LinkedQueue::new(),
             sys_mailbox: LinkedQueue::new(),
-            // children: vec![],
+            supervisor: None,
+            children: vec![],
         }
     }
 

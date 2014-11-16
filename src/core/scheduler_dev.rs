@@ -1,6 +1,5 @@
 use {Actor};
-use core::{ActorCell, Event};
-use core::Schedule;
+use core::{ActorCell, Cell, Event};
 use util::Async;
 use syncbox::{LinkedQueue, Consume, Produce};
 use syncbox::locks::{MutexCell, CondVar};
@@ -26,9 +25,9 @@ pub struct SchedulerInner {
 }
 
 #[thread_local]
-static mut SCHEDULED: Option<&'static Schedule+Send+'static> = None;
+static mut SCHEDULED: Option<&'static Cell+Send+'static> = None;
 
-pub unsafe fn currently_scheduled<'a>() -> Option<&'a Schedule+'static> {
+pub unsafe fn currently_scheduled<'a>() -> Option<&'a Cell+'static> {
     SCHEDULED.map(|r| mem::transmute(r))
 }
 
@@ -83,7 +82,7 @@ impl SchedulerInner {
     // Schedule the actor for execution[
     fn schedule_actor<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: ActorCell<A, Msg, Ret>) {
         // self.enqueue(Task(proc() -> bool { cell.tick() }));
-        self.enqueue(Task(box cell as Box<Schedule + Send>));
+        self.enqueue(Task(box cell as Box<Cell + Send>));
     }
 
     fn enqueue(&self, op: Op) {
@@ -93,7 +92,7 @@ impl SchedulerInner {
 }
 
 enum Op {
-    Task(Box<Schedule + Send>),
+    Task(Box<Cell + Send>),
     Terminate,
 }
 
