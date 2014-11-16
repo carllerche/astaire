@@ -10,6 +10,7 @@
 #![feature(default_type_params)]
 
 extern crate syncbox;
+extern crate alloc;
 
 #[phase(plugin, link)]
 extern crate log;
@@ -22,16 +23,9 @@ pub use system::{
     spawn,
 };
 
-pub mod util {
-    pub use core::future::Async;
-
-    pub mod future {
-        pub use core::future::{Future, Completer};
-    }
-}
-
 mod core;
 mod actor;
 mod actor_ref;
 mod system;
 mod sys;
+mod util;

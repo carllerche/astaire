@@ -1,22 +1,22 @@
 use {Actor};
 use core::{Event, Spawn, Message, Exec, Runtime, RuntimeWeak};
 use core::future::Request;
-use util::Async;
+use util::{Async, UnsafeArc};
 
 use std::cell::UnsafeCell;
 use std::mem;
 use std::num::FromPrimitive;
 use std::raw::TraitObject;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUint, Relaxed};
 use syncbox::{Consume, Produce, LinkedQueue};
 
 pub struct ActorCell<A, M: Send, R: Async> {
-    inner: Arc<CellInner<A, M, R>>,
+    inner: UnsafeArc<CellInner<A, M, R>>,
 }
 
 // The functions that need to be accessible via trait object
-pub trait Cell : Send + Sync {
+// TODO: Split out schedule fn -> Schedule
+pub trait Cell {
     // Scheduler tick, returns whether ot not to reschedule for another
     // iteration.
     fn tick(&self) -> bool;
@@ -29,23 +29,25 @@ pub trait Cell : Send + Sync {
 }
 
 struct CellRef {
-    cell: TraitObject,
+    cell: *const Cell+Send+Sync,
 }
 
 impl CellRef {
-    fn new(cell: &Cell) -> CellRef {
-        CellRef { cell: unsafe { mem::transmute(cell) } }
+    fn new<M, R, A: Actor<M, R>>(cell: &ActorCell<A, M, R>) -> CellRef {
+        let ptr: *const Cell = cell as *const Cell; // cell.inner.unsafe_ptr();
+        unimplemented!()
     }
 
     fn cell(&self) -> &Cell {
-        unsafe { mem::transmute(self.cell) }
+        unimplemented!()
+        // unsafe { mem::transmute(self.cell) }
     }
 }
 
 impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> ActorCell<A, Msg, Ret> {
     pub fn new(actor: A, runtime: RuntimeWeak) -> ActorCell<A, Msg, Ret> {
         ActorCell {
-            inner: Arc::new(CellInner::new(actor, runtime))
+            inner: UnsafeArc::new(CellInner::new(actor, runtime))
         }
     }
 
@@ -70,7 +72,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell for ActorCell<A, Msg, Ret> 
     }
 
     fn runtime(&self) -> Runtime {
-        self.inner.runtime().clone()
+        self.inner.runtime()
     }
 }
 
@@ -99,9 +101,9 @@ struct CellInner<A, M: Send, R: Async> {
     // The mailbox for all system messages
     sys_mailbox: LinkedQueue<Event<M, R>>,
     // The supervisor
-    supervisor: Option<CellRef>,
+    // supervisor: Option<CellRef>,
     // Supervised actors - TODO: Not the right types
-    children: Vec<Box<Cell+Send+Sync>>,
+    // children: Vec<Box<Cell+Send+Sync>>,
 }
 
 impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
@@ -112,8 +114,8 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
             runtime: runtime,
             mailbox: LinkedQueue::new(),
             sys_mailbox: LinkedQueue::new(),
-            supervisor: None,
-            children: vec![],
+            // supervisor: None,
+            // children: vec![],
         }
     }
 
@@ -179,6 +181,51 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
         }
     }
 
+    fn process_queue(&self) -> bool {
+        debug!("ActorCell::process_queue");
+
+        // First process all system events
+        while let Some(event) = self.sys_mailbox.take() {
+            self.process_event(event);
+        }
+
+        // Process a single user event
+        if let Some(event) = self.mailbox.take() {
+            self.process_event(event);
+            return true;
+        }
+
+        debug!("  no messages to process");
+        return false;
+    }
+
+    fn process_event(&self, event: Event<Msg, Ret>) {
+        debug!("processing event; event={}", event);
+
+        match event {
+            Message(msg) => self.receive_msg(msg),
+            Exec(f) => f.call_once(()),
+            Spawn => self.actor().prepare(),
+        }
+    }
+
+    fn receive_msg(&self, request: Request<Msg, Ret>) {
+        let Request { message, response } = request;
+        self.actor().receive(message).link(response);
+    }
+
+    // Pretty hacky
+    fn actor<'a>(&'a self) -> &'a mut A {
+        use std::mem;
+
+        unsafe {
+            let actor: &mut A = mem::transmute(self.actor.get());
+            actor
+        }
+    }
+}
+
+impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell for CellInner<A, Msg, Ret> {
     // Execute a single iteration of the actor
     fn tick(&self) -> bool {
         debug!("ActorCell::tick");
@@ -234,52 +281,14 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
         }
     }
 
-    fn process_queue(&self) -> bool {
-        debug!("ActorCell::process_queue");
-
-        // First process all system events
-        while let Some(event) = self.sys_mailbox.take() {
-            self.process_event(event);
-        }
-
-        // Process a single user event
-        if let Some(event) = self.mailbox.take() {
-            self.process_event(event);
-            return true;
-        }
-
-        debug!("  no messages to process");
-        return false;
-    }
-
-    fn process_event(&self, event: Event<Msg, Ret>) {
-        debug!("processing event; event={}", event);
-
-        match event {
-            Message(msg) => self.receive_msg(msg),
-            Exec(f) => f.call_once(()),
-            Spawn => self.actor().prepare(),
-        }
-    }
-
-    fn receive_msg(&self, request: Request<Msg, Ret>) {
-        let Request { message, response } = request;
-        self.actor().receive(message).link(response);
+    fn schedule(&self, f: Box<FnOnce<(),()> + Send>) -> Box<FnOnce<(),()> + Send> {
+        // TODO: Remove from trait
+        unimplemented!();
     }
 
     fn runtime(&self) -> Runtime {
         self.runtime.upgrade()
             .expect("[BUG] runtime has been finalized").clone()
-    }
-
-    // Pretty hacky
-    fn actor<'a>(&'a self) -> &'a mut A {
-        use std::mem;
-
-        unsafe {
-            let actor: &mut A = mem::transmute(self.actor.get());
-            actor
-        }
     }
 }
 
