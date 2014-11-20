@@ -1,5 +1,5 @@
 use {Actor};
-use core::ActorCell;
+use core::{ActorCell, CellPtr};
 use core::future::Request;
 use util::{Async};
 
@@ -21,7 +21,14 @@ impl<M: Send, R: Async, A: Actor<M, R>> ActorRef<A, M, R> {
     }
 }
 
-// Separate fn to keep the ActorRef public API clean
+/*
+ * === Separated out to keep ActorRef public API clean ===
+ */
+
 pub fn new<M: Send, R: Async, A: Actor<M, R>>(cell: ActorCell<A, M, R>) -> ActorRef<A, M, R> {
     ActorRef { cell: cell }
+}
+
+pub fn ptr<M: Send, R: Async, A: Actor<M, R>>(actor_ref: &ActorRef<A, M, R>) -> CellPtr {
+    unimplemented!()
 }

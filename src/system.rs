@@ -1,4 +1,4 @@
-use {Actor, ActorRef};
+use {Actor, ActorRef, actor_ref};
 use core::Runtime;
 use util::Async;
 use std::i64;
@@ -6,7 +6,7 @@ use std::time::Duration;
 
 /// Spawns a new actor. Must be called from an actor.
 pub fn spawn<M: Send, R: Async, A: Actor<M, R>>(actor: A) -> ActorRef<A, M, R> {
-    Runtime::current().spawn(actor)
+    Runtime::current().spawn(actor, None)
 }
 
 pub struct System {
@@ -34,9 +34,14 @@ impl System {
         self.runtime.shutdown(timeout);
     }
 
-    pub fn spawn<M: Send, Ret: Async, A: Actor<M, Ret>>(&self, actor: A) -> ActorRef<A, M, Ret> {
+    pub fn spawn<M: Send, R: Async, A: Actor<M, R>>(&self, actor: A) -> ActorRef<A, M, R> {
         self.start(); // Ensure that the system is running
-        self.runtime.spawn(actor)
+        self.runtime.spawn(actor, None)
+    }
+
+    pub fn spawn_link<M1: Send, M2: Send, R1: Async, R2: Async, A1: Actor<M1, R1>, A2: Actor<M2, R2>>(&self, actor: A1, supervisor: &ActorRef<A2, M2, R2>) -> ActorRef<A1, M1, R1> {
+        self.start(); // Ensure that the system is running
+        self.runtime.spawn(actor, Some(actor_ref::ptr(supervisor)))
     }
 }
 

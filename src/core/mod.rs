@@ -1,4 +1,4 @@
-pub use self::cell::{ActorCell, Cell};
+pub use self::cell::{ActorCell, Cell, CellPtr};
 pub use self::runtime::{Runtime, RuntimeWeak};
 pub use self::scheduler::{Scheduler, currently_scheduled};
 use self::future::{Async, Request};

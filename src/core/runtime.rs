@@ -5,8 +5,10 @@
 
 use {Actor, ActorRef};
 use actor_ref;
-use core::{ActorCell, Event, Spawn, Scheduler, currently_scheduled};
+use core::{ActorCell, CellPtr, Event, Spawn, Scheduler, currently_scheduled};
+use sys::Init;
 use util::Async;
+use std::{mem, ptr};
 use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicUint, Relaxed};
 use std::time::Duration;
@@ -17,8 +19,11 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new() -> Runtime {
-        Runtime {
-            inner: Arc::new(RuntimeInner::new()),
+        unsafe {
+            let mut rt = Runtime { inner: Arc::new(RuntimeInner::new()) };
+            // Yes, you will cry, but it's OK
+            ptr::write(mem::transmute(&rt.inner.init), ActorCell::new(Init::new(), rt.weak()));
+            rt
         }
     }
 
@@ -45,7 +50,7 @@ impl Runtime {
     }
 
     /// Spawn a new actor
-    pub fn spawn<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, actor: A) -> ActorRef<A, Msg, Ret> {
+    pub fn spawn<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, actor: A, supervisor: Option<CellPtr>) -> ActorRef<A, Msg, Ret> {
         debug!("spawning actor");
         let cell = ActorCell::new(actor, self.weak());
         self.inner.dispatch(cell.clone(), Spawn);
@@ -87,14 +92,15 @@ impl RuntimeWeak {
 struct RuntimeInner {
     state: AtomicUint,
     scheduler: Scheduler,
-    // init: ActorCell<Init, (), ()>,
+    init: ActorCell<Init, (), ()>,
 }
 
 impl RuntimeInner {
-    fn new() -> RuntimeInner {
+    unsafe fn new() -> RuntimeInner {
         RuntimeInner {
-            state: AtomicUint::new(Init as uint),
+            state: AtomicUint::new(New as uint),
             scheduler: Scheduler::new(),
+            init: mem::zeroed(),
         }
     }
 
@@ -107,8 +113,8 @@ impl RuntimeInner {
                 .expect("[BUG] invalid state");
 
             let next = match curr {
-                // Transition from Init to Running
-                Init => Running,
+                // Transition from New to Running
+                New => Running,
                 // Nothing to do
                 _ => return,
             };
@@ -134,7 +140,7 @@ impl RuntimeInner {
                 .expect("[BUG] invalid state");
 
             let next = match curr {
-                Init | Running => ShuttingDown,
+                New | Running => ShuttingDown,
                 ShuttingDown => break,
                 Shutdown => return,
             };
@@ -171,7 +177,7 @@ impl Drop for RuntimeInner {
 #[deriving(Show, FromPrimitive)]
 #[repr(uint)]
 enum State {
-    Init,
+    New,
     Running,
     ShuttingDown,
     Shutdown,
