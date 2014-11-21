@@ -1,4 +1,5 @@
-pub use self::cell::{ActorCell, Cell, CellPtr};
+pub use self::Event::*;
+pub use self::cell::{Cell, CellRef};
 pub use self::runtime::{Runtime, RuntimeWeak};
 pub use self::scheduler::{Scheduler, currently_scheduled};
 use self::future::{Async, Request};
@@ -19,6 +20,7 @@ mod scheduler;
 enum Event<M: Send, R: Async> {
     Message(Request<M, R>),
     Spawn,
+    Link(CellRef),
     Exec(Box<FnOnce<(),()> + Send>),
 }
 
@@ -52,6 +54,7 @@ impl<M: Send, R: Async> fmt::Show for Event<M, R> {
             Message(..) => write!(fmt, "Message"),
             Exec(..) => write!(fmt, "Exec"),
             Spawn => write!(fmt, "Spawn"),
+            Link(..) => write!(fmt, "Link"),
         }
     }
 }

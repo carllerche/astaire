@@ -1,5 +1,7 @@
 use {Actor};
-use core::{ActorCell, Cell, Event};
+use self::Op::*;
+use self::State::*;
+use core::{Cell, CellRef, Event};
 use util::Async;
 use syncbox::{LinkedQueue, Consume, Produce};
 use syncbox::locks::{MutexCell, CondVar};
@@ -25,10 +27,10 @@ pub struct SchedulerInner {
 }
 
 #[thread_local]
-static mut SCHEDULED: Option<&'static Cell+Send+'static> = None;
+static mut SCHEDULED: Option<&'static CellRef> = None;
 
-pub unsafe fn currently_scheduled<'a>() -> Option<&'a Cell+'static> {
-    SCHEDULED.map(|r| mem::transmute(r))
+pub unsafe fn currently_scheduled<'a>() -> Option<&'a CellRef> {
+    mem::transmute(SCHEDULED)
 }
 
 impl Scheduler {
@@ -52,8 +54,11 @@ impl Scheduler {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: ActorCell<A, Msg, Ret>, event: Event<Msg, Ret>) {
+    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
         debug!("dispatching event to cell");
+
+        // TODO: Even if the cell is shutdown, it needs to be scheduled to
+        // drain the message
         if cell.deliver_event(event) {
             debug!("  cell requires scheduling");
             self.inner.schedule_actor(cell);
@@ -80,9 +85,9 @@ impl SchedulerInner {
     }
 
     // Schedule the actor for execution[
-    fn schedule_actor<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: ActorCell<A, Msg, Ret>) {
+    fn schedule_actor<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>) {
         // self.enqueue(Task(proc() -> bool { cell.tick() }));
-        self.enqueue(Task(box cell as Box<Cell + Send>));
+        self.enqueue(Task(cell.to_ref()));
     }
 
     fn enqueue(&self, op: Op) {
@@ -92,7 +97,7 @@ impl SchedulerInner {
 }
 
 enum Op {
-    Task(Box<Cell + Send>),
+    Task(CellRef),
     Terminate,
 }
 
@@ -107,7 +112,7 @@ fn worker_loop(scheduler: Arc<SchedulerInner>) {
 
             match op {
                 Task(scheduled) => {
-                    unsafe { SCHEDULED = Some(mem::transmute(&*scheduled)) };
+                    unsafe { SCHEDULED = Some(mem::transmute(&scheduled)) };
 
                     // If true, requires reschedule
                     if scheduled.tick() {

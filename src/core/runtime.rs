@@ -5,8 +5,10 @@
 
 use {Actor, ActorRef};
 use actor_ref;
-use core::{ActorCell, CellPtr, Event, Spawn, Scheduler, currently_scheduled};
-use sys::Init;
+use self::State::*;
+use core::{Cell, CellRef, Event, Scheduler, currently_scheduled};
+use core::Event::{Spawn};
+use sys::{Init, User};
 use util::Async;
 use std::{mem, ptr};
 use std::sync::{Arc, Weak};
@@ -22,7 +24,9 @@ impl Runtime {
         unsafe {
             let mut rt = Runtime { inner: Arc::new(RuntimeInner::new()) };
             // Yes, you will cry, but it's OK
-            ptr::write(mem::transmute(&rt.inner.init), ActorCell::new(Init::new(), rt.weak()));
+            // TODO: This is very dangerous given that the init actor may
+            // access the runtime
+            ptr::write(mem::transmute(&rt.inner.init), Cell::new(Init::new(), rt.weak()));
             rt
         }
     }
@@ -45,14 +49,15 @@ impl Runtime {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: ActorCell<A, Msg, Ret>, event: Event<Msg, Ret>) {
+    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
         self.inner.dispatch(cell, event);
     }
 
     /// Spawn a new actor
-    pub fn spawn<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, actor: A, supervisor: Option<CellPtr>) -> ActorRef<A, Msg, Ret> {
+    pub fn spawn<M1: Send, R1: Async, A1: Actor<M1, R1>, M2: Send, R2: Async, A2: Actor<M2, R2>>(&self, actor: A1, supervisor: Option<&ActorRef<A2, M2, R2>>) -> ActorRef<A1, M1, R1> {
+        // TODO: Link before spawning
         debug!("spawning actor");
-        let cell = ActorCell::new(actor, self.weak());
+        let cell = Cell::new(actor, self.weak());
         self.inner.dispatch(cell.clone(), Spawn);
         actor_ref::new(cell)
     }
@@ -92,7 +97,7 @@ impl RuntimeWeak {
 struct RuntimeInner {
     state: AtomicUint,
     scheduler: Scheduler,
-    init: ActorCell<Init, (), ()>,
+    init: Cell<Init, (), ()>,
 }
 
 impl RuntimeInner {
@@ -162,7 +167,7 @@ impl RuntimeInner {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: ActorCell<A, Msg, Ret>, event: Event<Msg, Ret>) {
+    fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
         self.scheduler.dispatch(cell, event);
     }
 }
@@ -171,6 +176,17 @@ impl Drop for RuntimeInner {
     fn drop(&mut self) {
         debug!("dropping RuntimeInner");
         self.scheduler.shutdown(Duration::milliseconds(0));
+    }
+}
+
+struct SysActors {
+    init: ActorRef<Init, (), ()>,
+    user: ActorRef<User, (), ()>,
+}
+
+impl SysActors {
+    fn spawn(rt: &Runtime) -> SysActors {
+        unimplemented!()
     }
 }
 

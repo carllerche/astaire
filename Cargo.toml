@@ -5,7 +5,7 @@ version = "0.0.1"
 authors = ["Carl Lerche <me@carllerche.com>"]
 
 [dependencies.syncbox]
-path = "libs/syncbox"
+git = "https://github.com/carllerche/syncbox"
 
 [[test]]
 name = "astaire-test"

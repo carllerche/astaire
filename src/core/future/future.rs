@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use self::State::*;
+use self::Waiter::*;
 use super::{Async, Request, Response};
 use core::{Cell, currently_scheduled};
 

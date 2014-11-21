@@ -1,5 +1,5 @@
 use {Actor};
-use core::{ActorCell, CellPtr};
+use core::{Cell, CellRef};
 use core::future::Request;
 use util::{Async};
 
@@ -9,7 +9,7 @@ use util::{Async};
 // - Inlined refs (no message dispatching)
 // - Remote refs pointing to actors in other systems
 pub struct ActorRef<A, M: Send, R: Async> {
-    cell: ActorCell<A, M, R>,
+    cell: Cell<A, M, R>,
 }
 
 impl<M: Send, R: Async, A: Actor<M, R>> ActorRef<A, M, R> {
@@ -25,10 +25,17 @@ impl<M: Send, R: Async, A: Actor<M, R>> ActorRef<A, M, R> {
  * === Separated out to keep ActorRef public API clean ===
  */
 
-pub fn new<M: Send, R: Async, A: Actor<M, R>>(cell: ActorCell<A, M, R>) -> ActorRef<A, M, R> {
+pub fn new<M: Send, R: Async, A: Actor<M, R>>(cell: Cell<A, M, R>) -> ActorRef<A, M, R> {
     ActorRef { cell: cell }
 }
 
-pub fn ptr<M: Send, R: Async, A: Actor<M, R>>(actor_ref: &ActorRef<A, M, R>) -> CellPtr {
+/*
+pub fn as_ref<'a><M: Send, R: Async, A: Actor<M, R>>(actor_ref: &'a ActorRef<A, M, R>) -> &'a CellRef {
     unimplemented!()
 }
+
+// Returns the CellPtr for the ref and increments the ref-count
+pub fn ptr_retained<M: Send, R: Async, A: Actor<M, R>>(actor_ref: &ActorRef<A, M, R>) -> CellPtr {
+    unimplemented!()
+}
+*/
