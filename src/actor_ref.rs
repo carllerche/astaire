@@ -29,11 +29,11 @@ pub fn new<M: Send, R: Async, A: Actor<M, R>>(cell: Cell<A, M, R>) -> ActorRef<A
     ActorRef { cell: cell }
 }
 
-/*
-pub fn as_ref<'a><M: Send, R: Async, A: Actor<M, R>>(actor_ref: &'a ActorRef<A, M, R>) -> &'a CellRef {
-    unimplemented!()
+pub fn to_ref<M: Send, R: Async, A: Actor<M, R>>(actor_ref: &ActorRef<A, M, R>) -> CellRef {
+    actor_ref.cell.to_ref()
 }
 
+/*
 // Returns the CellPtr for the ref and increments the ref-count
 pub fn ptr_retained<M: Send, R: Async, A: Actor<M, R>>(actor_ref: &ActorRef<A, M, R>) -> CellPtr {
     unimplemented!()

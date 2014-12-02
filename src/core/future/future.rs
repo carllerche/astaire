@@ -3,7 +3,7 @@
 use self::State::*;
 use self::Waiter::*;
 use super::{Async, Request, Response};
-use core::{Cell, currently_scheduled};
+use core::{currently_scheduled};
 
 use std::mem;
 use std::sync::Arc;

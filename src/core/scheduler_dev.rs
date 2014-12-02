@@ -53,15 +53,23 @@ impl Scheduler {
         self.inner.shutdown(timeout);
     }
 
+    // Must be separated out to support using CellRefs vs. something else
+    pub fn spawn_link(&self, cell: CellRef, supervisor: CellRef) {
+        if supervisor.spawn_link(cell) {
+            debug!("  cell requires scheduling");
+            self.inner.schedule_cell(supervisor);
+        }
+    }
+
     // Dispatches the event to the specified actor, scheduling it if needed
-    pub fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
+    pub fn dispatch<M: Send, R: Async, A: Actor<M, R>>(&self, cell: Cell<A, M, R>, event: Event<M, R>) {
         debug!("dispatching event to cell");
 
         // TODO: Even if the cell is shutdown, it needs to be scheduled to
         // drain the message
         if cell.deliver_event(event) {
             debug!("  cell requires scheduling");
-            self.inner.schedule_actor(cell);
+            self.inner.schedule_cell(cell.to_ref());
         }
     }
 }
@@ -84,10 +92,8 @@ impl SchedulerInner {
         }
     }
 
-    // Schedule the actor for execution[
-    fn schedule_actor<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>) {
-        // self.enqueue(Task(proc() -> bool { cell.tick() }));
-        self.enqueue(Task(cell.to_ref()));
+    fn schedule_cell(&self, cell: CellRef) {
+        self.enqueue(Task(cell));
     }
 
     fn enqueue(&self, op: Op) {

@@ -6,11 +6,11 @@
 use {Actor, ActorRef};
 use actor_ref;
 use self::State::*;
-use core::{Cell, CellRef, Event, Scheduler, currently_scheduled};
+use core::{Cell, Event, Scheduler, currently_scheduled};
 use core::Event::{Spawn};
 use sys::{Init, User};
 use util::Async;
-use std::{mem, ptr};
+use std::mem;
 use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicUint, Relaxed};
 use std::time::Duration;
@@ -21,14 +21,14 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new() -> Runtime {
+        let rt = Runtime { inner: Arc::new(RuntimeInner::new()) };
+        let sys = SysActors::spawn(&rt);
+
         unsafe {
-            let mut rt = Runtime { inner: Arc::new(RuntimeInner::new()) };
-            // Yes, you will cry, but it's OK
-            // TODO: This is very dangerous given that the init actor may
-            // access the runtime
-            ptr::write(mem::transmute(&rt.inner.init), Cell::new(Init::new(), rt.weak()));
-            rt
+            mem::replace(mem::transmute(&rt.inner.sys_actors), Some(sys));
         }
+
+        rt
     }
 
     pub fn current() -> Runtime {
@@ -55,11 +55,7 @@ impl Runtime {
 
     /// Spawn a new actor
     pub fn spawn<M1: Send, R1: Async, A1: Actor<M1, R1>, M2: Send, R2: Async, A2: Actor<M2, R2>>(&self, actor: A1, supervisor: Option<&ActorRef<A2, M2, R2>>) -> ActorRef<A1, M1, R1> {
-        // TODO: Link before spawning
-        debug!("spawning actor");
-        let cell = Cell::new(actor, self.weak());
-        self.inner.dispatch(cell.clone(), Spawn);
-        actor_ref::new(cell)
+        self.inner.spawn(Cell::new(actor, self.weak()), supervisor)
     }
 
     fn weak(&self) -> RuntimeWeak {
@@ -97,15 +93,15 @@ impl RuntimeWeak {
 struct RuntimeInner {
     state: AtomicUint,
     scheduler: Scheduler,
-    init: Cell<Init, (), ()>,
+    sys_actors: Option<SysActors>,
 }
 
 impl RuntimeInner {
-    unsafe fn new() -> RuntimeInner {
+    fn new() -> RuntimeInner {
         RuntimeInner {
             state: AtomicUint::new(New as uint),
             scheduler: Scheduler::new(),
-            init: mem::zeroed(),
+            sys_actors: None,
         }
     }
 
@@ -166,6 +162,35 @@ impl RuntimeInner {
         self.state.swap(Shutdown as uint, Relaxed);
     }
 
+    /// Spawn a new actor
+    pub fn spawn<M1: Send, R1: Async, A1: Actor<M1, R1>, M2: Send, R2: Async, A2: Actor<M2, R2>>(&self, cell: Cell<A1, M1, R1>, supervisor: Option<&ActorRef<A2, M2, R2>>) -> ActorRef<A1, M1, R1> {
+        debug!("spawning actor");
+
+        match supervisor {
+            Some(supervisor) => self.scheduler.spawn_link(cell.to_ref(), actor_ref::to_ref(supervisor)),
+            _ => {
+                // No specified supervisor, use the current actor
+                match unsafe { currently_scheduled() } {
+                    Some(curr) => self.scheduler.spawn_link(cell.to_ref(), curr.clone()),
+                    _ => {
+                        // No actor currently running, run under user actor
+                        match self.sys_actors {
+                            Some(ref sys) => self.scheduler.spawn_link(cell.to_ref(), actor_ref::to_ref(&sys.user)),
+                            _ => {
+                                // Currently booting up, this must be Init,
+                                // simply spawn
+                                self.dispatch(cell.clone(), Spawn);
+                            }
+                        }
+
+                    }
+                }
+            }
+        }
+
+        actor_ref::new(cell)
+    }
+
     // Dispatches the event to the specified actor, scheduling it if needed
     fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
         self.scheduler.dispatch(cell, event);
@@ -186,7 +211,10 @@ struct SysActors {
 
 impl SysActors {
     fn spawn(rt: &Runtime) -> SysActors {
-        unimplemented!()
+        let init = rt.spawn(Init::new(), None::<&ActorRef<Init, (), ()>>);
+        let user = rt.spawn(User::new(), Some(&init));
+
+        SysActors { init: init, user: user }
     }
 }
 

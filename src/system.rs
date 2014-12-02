@@ -1,4 +1,4 @@
-use {Actor, ActorRef, actor_ref};
+use {Actor, ActorRef};
 use core::Runtime;
 use util::Async;
 use std::i64;
