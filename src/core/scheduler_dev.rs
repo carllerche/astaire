@@ -1,7 +1,7 @@
 use {Actor};
 use self::Op::*;
 use self::State::*;
-use core::{Cell, CellRef, Event};
+use core::{Cell, CellRef, Event, SysEvent};
 use util::Async;
 use syncbox::{LinkedQueue, Consume, Produce};
 use syncbox::locks::{MutexCell, CondVar};
@@ -55,7 +55,7 @@ impl Scheduler {
 
     // Must be separated out to support using CellRefs vs. something else
     pub fn spawn_link(&self, cell: CellRef, supervisor: CellRef) {
-        if supervisor.spawn_link(cell) {
+        if supervisor.deliver_sys_event(SysEvent::Link(cell)) {
             debug!("  cell requires scheduling");
             self.inner.schedule_cell(supervisor);
         }
@@ -65,9 +65,19 @@ impl Scheduler {
     pub fn dispatch<M: Send, R: Async, A: Actor<M, R>>(&self, cell: Cell<A, M, R>, event: Event<M, R>) {
         debug!("dispatching event to cell");
 
-        // TODO: Even if the cell is shutdown, it needs to be scheduled to
-        // drain the message
+        // TODO: Handle dispatching to shutdown / crashed actor
         if cell.deliver_event(event) {
+            debug!("  cell requires scheduling");
+            self.inner.schedule_cell(cell.to_ref());
+        }
+    }
+
+    // Dispatches the event to the specified actor, scheduling it if needed
+    pub fn sys_dispatch<M: Send, R: Async, A: Actor<M, R>>(&self, cell: Cell<A, M, R>, event: SysEvent) {
+        debug!("dispatching sys event to cell");
+
+        // TODO: Handle dispatching to shutdown / crashed actor
+        if cell.deliver_sys_event(event) {
             debug!("  cell requires scheduling");
             self.inner.schedule_cell(cell.to_ref());
         }
@@ -117,7 +127,7 @@ fn worker_loop(scheduler: Arc<SchedulerInner>) {
         if let Some(op) = scheduler.queue.take_wait(Duration::seconds(120)) {
 
             match op {
-                Task(scheduled) => {
+                Task(mut scheduled) => {
                     unsafe { SCHEDULED = Some(mem::transmute(&scheduled)) };
 
                     // If true, requires reschedule

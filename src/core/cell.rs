@@ -1,7 +1,8 @@
 use {Actor};
 use self::State::*;
-use core::{Event, Runtime, RuntimeWeak};
-use core::Event::{Spawn, Message, Exec, Link};
+use core::{SysEvent, Event, Runtime, RuntimeWeak};
+use core::Event::{Message, Exec};
+use core::SysEvent::{Spawn, Link, Terminated};
 use core::future::Request;
 use util::Async;
 
@@ -44,16 +45,9 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell<A, Msg, Ret> {
         self.inner().deliver_event(event)
     }
 
-    /*
-    pub fn is_alias(&self, aref: CellRef) -> bool {
-        unsafe {
-            let a: *const () = mem::transmute(self.inner);
-            let b: *const () = mem::transmute(aref.ptr.cell);
-
-            a == b
-        }
+    pub fn deliver_sys_event(&self, event: SysEvent) -> bool {
+        self.inner().deliver_sys_event(event)
     }
-    */
 
     pub fn to_ref(&self) -> CellRef {
         self.inner().retain();
@@ -92,12 +86,12 @@ impl CellRef {
         CellRef { ptr: ptr }
     }
 
-    pub fn spawn_link(&self, cell: CellRef) -> bool {
-        self.ptr.cell_obj().spawn_link(cell)
+    pub fn deliver_sys_event(&self, event: SysEvent) -> bool {
+        self.ptr.cell_obj().deliver_sys_event(event)
     }
 
-    pub fn tick(&self) -> bool {
-        self.ptr.cell_obj().tick()
+    pub fn tick(&mut self) -> bool {
+        self.ptr.cell_obj_mut().tick()
     }
 
     // Get the runtime behind this cell
@@ -147,11 +141,12 @@ impl State {
 
 // Common fns between a concrete cell and a CellRef
 trait CellObj: Send + Sync {
-    fn spawn_link(&self, cell: CellRef) -> bool;
+    // Spawn the cell as a child of the current cell
+    fn deliver_sys_event(&self, event: SysEvent) -> bool;
 
     // Scheduler tick, returns whether ot not to reschedule for another
     // iteration.
-    fn tick(&self) -> bool;
+    fn tick(&mut self) -> bool;
 
     // Schedule the function to execute in the context of this schedulable type
     fn schedule(&self, f: Box<FnOnce<(),()> + Send>) -> Box<FnOnce<(),()> + Send>;
@@ -183,7 +178,7 @@ struct CellInner<A, M: Send, R: Async> {
     // The mailbox for all user level messages
     mailbox: LinkedQueue<Event<M, R>>,
     // The mailbox for all system messages
-    sys_mailbox: LinkedQueue<Event<M, R>>,
+    sys_mailbox: LinkedQueue<SysEvent>,
     // The actor that the cell is powering
     actor: UnsafeCell<A>,
 }
@@ -226,25 +221,37 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     // Messages can be delivered before the actor has been spawned, in which
     // case, the actor is not scheduled.
     fn deliver_event(&self, event: Event<Msg, Ret>) -> bool {
-        // Track if the event is a spawn
-        let spawn = event.is_spawn();
+        // First enqueue the message:
+        self.mailbox.put(event).ok().unwrap();
+
+        // Schedule the actor if needed
+        self.maybe_schedule(false)
+    }
+
+    fn deliver_sys_event(&self, event: SysEvent) -> bool {
+        let spawning = event.is_spawn();
 
         // First enqueue the message:
-        self.enqueue_event(event);
+        self.sys_mailbox.put(event).ok().unwrap();
 
+        // Schedule the actor if needed
+        self.maybe_schedule(spawning)
+    }
+
+    fn maybe_schedule(&self, spawning: bool) -> bool {
         let mut expect = self.state.load(Relaxed);
 
         loop {
             let curr: State = FromPrimitive::from_uint(expect)
                 .expect("[BUG] invalid state");
 
-            debug!("deliver_event; state={}; is_spawn={}", curr, spawn);
+            debug!("deliver_event; state={}; spawning={}", curr, spawning);
 
             let next = match curr {
                 // Cases in which there is never a need to schedule
                 Scheduled | Pending | Shutdown | Crashed => return false,
                 // When in the initial state, only request a schedule when the event is a spawn
-                New => return spawn,
+                New => return spawning,
                 // If the actor is currently idle, it needs to be scheduled to
                 // process the new message. Transition to a Scheduled state.
                 Idle => Scheduled,
@@ -271,16 +278,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
         }
     }
 
-    fn enqueue_event(&self, event: Event<Msg, Ret>) {
-        // TODO: Handle error
-        if event.is_message() {
-            self.mailbox.put(event).ok().unwrap();
-        } else {
-            self.sys_mailbox.put(event).ok().unwrap();
-        }
-    }
-
-    fn process_queue(&self, initial: bool) -> bool {
+    fn process_queue(&mut self, initial: bool) -> bool {
         debug!("Cell::process_queue; initial={}", initial);
 
         // If this is the first call, the actor has not yet been spawned
@@ -293,15 +291,15 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
         while let Some(event) = self.sys_mailbox.take() {
             // Track whether the event was a spawn
             if event.is_spawn() {
-                is_spawned == true;
+                is_spawned = true;
             }
 
-            self.process_event(event, is_spawned);
+            self.process_sys_event(event, is_spawned);
         }
 
         // Process a single user event
         if let Some(event) = self.mailbox.take() {
-            self.process_event(event, is_spawned);
+            self.process_event(event);
             return true;
         }
 
@@ -309,12 +307,19 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
         return false;
     }
 
-    fn process_event(&self, event: Event<Msg, Ret>, is_spawned: bool) {
+    fn process_event(&mut self, event: Event<Msg, Ret>) {
         debug!("processing event; event={}", event);
 
         match event {
             Message(msg) => self.receive_msg(msg),
             Exec(f) => f.call_once(()),
+        }
+    }
+
+    fn process_sys_event(&mut self, event: SysEvent, is_spawned: bool) {
+        debug!("processing sys event; event={}", event);
+
+        match event {
             Spawn => {
                 // First, invoke the actor's prepare fn
                 self.actor().prepare();
@@ -322,7 +327,14 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
                 // Issue Spawn messages to all child actors
                 self.spawn_children();
             }
-            Link(child) => self.link_child(child, is_spawned),
+            Link(cell) => {
+                // Spawn the cell as a child of the current actor
+                self.link_child(cell, is_spawned);
+            }
+            Terminated(_) => {
+                // A child actor terminated
+                unimplemented!();
+            }
         }
     }
 
@@ -336,16 +348,19 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     //
     // Must be invoked from the actor loop
     fn link_child(&mut self, child: CellRef, is_spawned: bool) {
-        self.data.link_child(child);
+        // Moves ownership of the cell ref into child list and returns a ref to
+        // the cell
+        let obj = self.data.link_child(child);
 
         if is_spawned {
-            // TOOD: Send the Spawn message
-            unimplemented!();
+            obj.deliver_sys_event(Spawn);
         }
     }
 
     fn spawn_children(&self) {
-        unimplemented!()
+        for child in self.data.child_iter() {
+            child.deliver_sys_event(Spawn);
+        }
     }
 
     // Pretty hacky
@@ -374,18 +389,21 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
         // supervisor releases the actor
         drop(ptr::read(&self.mailbox));
         drop(ptr::read(&self.sys_mailbox));
+
+        // Deallocate the memory
         deallocate(mem::transmute(self), mem::size_of::<CellInner<A, Msg, Ret>>(),
                    mem::min_align_of::<CellInner<A, Msg, Ret>>());
     }
 }
 
 impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellObj for CellInner<A, Msg, Ret> {
-    fn spawn_link(&self, cell: CellRef) -> bool {
-        self.deliver_event(Link(cell))
+    // self.deliver_sys_event(Link(cell))
+    fn deliver_sys_event(&self, event: SysEvent) -> bool {
+        CellInner::deliver_sys_event(self, event)
     }
 
     // Execute a single iteration of the actor
-    fn tick(&self) -> bool {
+    fn tick(&mut self) -> bool {
         debug!("Cell::tick");
 
         // Transition the cell to the running state
@@ -483,12 +501,34 @@ impl CellData {
         }
     }
 
-    fn link_child(&mut self, child: CellRef) {
+    fn link_child(&mut self, child: CellRef) -> &(CellObj+Send+Sync) {
         // Convert CellRef -> a ptr, Drop should not be called
         let ptr = child.to_ptr();
 
         self.children.push_sibling(ptr);
         self.children = ptr;
+
+        ptr.cell_obj()
+    }
+
+    fn child_iter<'a>(&'a self) -> ChildIter<'a> {
+        ChildIter { next: self.children }
+    }
+}
+
+struct ChildIter<'a> {
+    next: CellPtr,
+}
+
+impl<'a> Iterator<&'a (CellObj+Send+Sync)> for ChildIter<'a> {
+    fn next(&mut self) -> Option<&'a (CellObj+Send+Sync)> {
+        if let Some(data) = self.next.cell_data() {
+            let ret = self.next.cell_obj();
+            self.next = data.next_sibling;
+            return Some(ret);
+        }
+
+        None
     }
 }
 
@@ -526,7 +566,7 @@ impl CellPtr {
     }
 
     // TODO: Should this return Option?
-    fn cell_obj(&self) -> &(CellObj+Send+Sync) {
+    fn cell_obj<'a>(&self) -> &'a (CellObj+Send+Sync) {
         unsafe {
             let data: &CellData = mem::transmute(self.cell);
             mem::transmute(TraitObject {
@@ -536,7 +576,11 @@ impl CellPtr {
         }
     }
 
-    fn cell_data(&self) -> Option<&CellData> {
+    fn cell_obj_mut<'a>(&mut self) -> &'a mut (CellObj+Send+Sync) {
+        unsafe { mem::transmute(self.cell_obj()) }
+    }
+
+    fn cell_data<'a>(&self) -> Option<&'a CellData> {
         if self.cell.is_null() {
             return None;
         }
@@ -544,7 +588,7 @@ impl CellPtr {
         unsafe { Some(mem::transmute(self.cell)) }
     }
 
-    fn cell_data_mut(&mut self) -> Option<&mut CellData> {
+    fn cell_data_mut<'a>(&mut self) -> Option<&'a mut CellData> {
         unsafe { mem::transmute(self.cell_data()) }
     }
 }

@@ -1,4 +1,5 @@
 pub use self::Event::*;
+pub use self::SysEvent::*;
 pub use self::cell::{Cell, CellRef};
 pub use self::runtime::{Runtime, RuntimeWeak};
 pub use self::scheduler::{Scheduler, currently_scheduled};
@@ -17,11 +18,24 @@ mod scheduler;
 #[path = "scheduler_dev.rs"]
 mod scheduler;
 
+/*
 enum Event<M: Send, R: Async> {
     Message(Request<M, R>),
     Spawn,
     Link(CellRef),
     Exec(Box<FnOnce<(),()> + Send>),
+}
+*/
+
+enum Event<M: Send, R: Async> {
+    Message(Request<M, R>),
+    Exec(Box<FnOnce<(), ()> + Send>),
+}
+
+enum SysEvent {
+    Spawn,
+    Link(CellRef),
+    Terminated(CellRef),
 }
 
 impl<M: Send, R: Async> Event<M, R> {
@@ -32,14 +46,9 @@ impl<M: Send, R: Async> Event<M, R> {
     fn exec(f: Box<FnOnce<(),()> + Send>) -> Event<M, R> {
         Exec(f)
     }
+}
 
-    fn is_message(&self) -> bool {
-        match *self {
-            Message(..) => true,
-            _ => false,
-        }
-    }
-
+impl SysEvent {
     fn is_spawn(&self) -> bool {
         match *self {
             Spawn => true,
@@ -53,8 +62,16 @@ impl<M: Send, R: Async> fmt::Show for Event<M, R> {
         match *self {
             Message(..) => write!(fmt, "Message"),
             Exec(..) => write!(fmt, "Exec"),
+        }
+    }
+}
+
+impl fmt::Show for SysEvent {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
             Spawn => write!(fmt, "Spawn"),
             Link(..) => write!(fmt, "Link"),
+            Terminated(..) => write!(fmt, "Terminated"),
         }
     }
 }

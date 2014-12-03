@@ -6,8 +6,8 @@
 use {Actor, ActorRef};
 use actor_ref;
 use self::State::*;
-use core::{Cell, Event, Scheduler, currently_scheduled};
-use core::Event::{Spawn};
+use core::{Cell, Event, SysEvent, Scheduler, currently_scheduled};
+use core::SysEvent::{Spawn};
 use sys::{Init, User};
 use util::Async;
 use std::mem;
@@ -179,7 +179,7 @@ impl RuntimeInner {
                             _ => {
                                 // Currently booting up, this must be Init,
                                 // simply spawn
-                                self.dispatch(cell.clone(), Spawn);
+                                self.sys_dispatch(cell.clone(), Spawn);
                             }
                         }
 
@@ -192,8 +192,12 @@ impl RuntimeInner {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    fn dispatch<Msg: Send, Ret: Async, A: Actor<Msg, Ret>>(&self, cell: Cell<A, Msg, Ret>, event: Event<Msg, Ret>) {
+    fn dispatch<M: Send, R: Async, A: Actor<M, R>>(&self, cell: Cell<A, M, R>, event: Event<M, R>) {
         self.scheduler.dispatch(cell, event);
+    }
+
+    fn sys_dispatch<M: Send, R: Async, A: Actor<M, R>>(&self, cell: Cell<A, M, R>, event: SysEvent) {
+        self.scheduler.sys_dispatch(cell, event);
     }
 }
 
