@@ -35,7 +35,8 @@ enum Event<M: Send, R: Async> {
 enum SysEvent {
     Spawn,
     Link(CellRef),
-    Terminated(CellRef),
+    Terminate,
+    ChildTerminated(CellRef),
 }
 
 impl<M: Send, R: Async> Event<M, R> {
@@ -71,7 +72,8 @@ impl fmt::Show for SysEvent {
         match *self {
             Spawn => write!(fmt, "Spawn"),
             Link(..) => write!(fmt, "Link"),
-            Terminated(..) => write!(fmt, "Terminated"),
+            Terminate => write!(fmt, "Terminate"),
+            ChildTerminated(..) => write!(fmt, "ChildTerminated"),
         }
     }
 }

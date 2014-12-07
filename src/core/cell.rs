@@ -1,13 +1,14 @@
 use {Actor};
-use self::State::*;
+use self::Lifecycle::*;
+use self::Schedule::*;
 use core::{SysEvent, Event, Runtime, RuntimeWeak};
 use core::Event::{Message, Exec};
-use core::SysEvent::{Spawn, Link, Terminated};
+use core::SysEvent::{Spawn, Link, Terminate, ChildTerminated};
 use core::future::Request;
 use util::Async;
 
 use std::cell::UnsafeCell;
-use std::{mem, ptr};
+use std::{fmt, mem, ptr};
 use std::num::FromPrimitive;
 use std::raw::TraitObject;
 use std::sync::atomic::{AtomicUint, Acquire, Relaxed, Release, fence};
@@ -25,7 +26,9 @@ use syncbox::{Consume, Produce, LinkedQueue};
  * linked. On Spawn, the actor will go through all linked children and spawn
  * them.
  *
- * How does one track whether or not the actor was spawned?
+ * ## TODO
+ *
+ * Figure out how to deal w/ messages when the actor is terminating.
  */
 pub struct Cell<A, M: Send, R: Async> {
     inner: *mut CellInner<A, M, R>,
@@ -50,8 +53,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell<A, Msg, Ret> {
     }
 
     pub fn to_ref(&self) -> CellRef {
-        self.inner().retain();
-        CellRef::new(CellPtr::new(self))
+        self.inner().to_ref()
     }
 
     fn inner(&self) -> &CellInner<A, Msg, Ret> {
@@ -87,75 +89,73 @@ impl CellRef {
     }
 
     pub fn deliver_sys_event(&self, event: SysEvent) -> bool {
-        self.ptr.cell_obj().deliver_sys_event(event)
+        self.cell_obj().deliver_sys_event(event)
     }
 
     pub fn tick(&mut self) -> bool {
-        self.ptr.cell_obj_mut().tick()
+        self.cell_obj_mut().tick()
     }
 
     // Get the runtime behind this cell
     pub fn runtime(&self) -> Runtime {
-        self.ptr.cell_obj().runtime()
+        self.cell_obj().runtime()
     }
 
     pub fn schedule(&self, f: Box<FnOnce<(),()> + Send>) -> Box<FnOnce<(),()> + Send> {
-        self.ptr.cell_obj().schedule(f)
+        self.cell_obj().schedule(f)
     }
 
     fn to_ptr(self) -> CellPtr {
         unsafe { mem::transmute(self) }
     }
+
+    fn cell_obj(&self) -> &(CellObj+Sync+Send) {
+        self.ptr.cell_obj().expect("cell pointer is null")
+    }
+
+    fn cell_obj_mut(&mut self) -> &mut (CellObj+Sync+Send) {
+        self.ptr.cell_obj_mut().expect("cell pointer is null")
+    }
 }
 
 impl Clone for CellRef {
     fn clone(&self) -> CellRef {
-        self.ptr.cell_obj().retain();
+        self.cell_obj().retain();
         CellRef { ptr: self.ptr }
     }
 }
 
 impl Drop for CellRef {
     fn drop(&mut self) {
-        // If the obj was already dropped, ptr will be nulled out
-        if self.ptr.is_null() { return; }
-
-        // Release the cell
-        unsafe { self.ptr.cell_obj().release(); }
+        if let Some(obj) = self.ptr.cell_obj() {
+            unsafe { obj.release() };
+        }
     }
-}
-
-#[deriving(Show, FromPrimitive, PartialEq)]
-enum State {
-    New,       // Initial actor state
-    Idle,      // Spawned, no pending messages
-    Scheduled, // Spawned, scheduled for execution (pending messages)
-    Running,   // Spawned, currently processing messages
-    Pending,   // Spawned, currently processing messages, more enqueued
-    Shutdown,  // Successfuly finished execution
-    Crashed,   // Terminated with failure
-}
-
-impl State {
 }
 
 // Common fns between a concrete cell and a CellRef
 trait CellObj: Send + Sync {
-    // Spawn the cell as a child of the current cell
-    fn deliver_sys_event(&self, event: SysEvent) -> bool;
 
     // Scheduler tick, returns whether ot not to reschedule for another
     // iteration.
     fn tick(&mut self) -> bool;
 
+    // Spawn the cell as a child of the current cell
+    fn deliver_sys_event(&self, event: SysEvent) -> bool;
+
+    // Terminates the actor (must be called in context of the actor)
+    fn terminate(&self);
+
     // Schedule the function to execute in the context of this schedulable type
     fn schedule(&self, f: Box<FnOnce<(),()> + Send>) -> Box<FnOnce<(),()> + Send>;
 
+    // Get the runtime for the cell
     fn runtime(&self) -> Runtime;
 
+    // Increment ref count
     fn retain(&self);
 
-    // Release the cell (possibly freeing the memory)
+    // Decrement ref count, freeing the cell if 0
     unsafe fn release(&self);
 }
 
@@ -170,7 +170,7 @@ struct CellInner<A, M: Send, R: Async> {
     // Supervision tree
     data: CellData, // Must be first field
     // The state of the actor
-    state: AtomicUint,
+    state: CellState,
     // The number of outstanding ActorRefs
     ref_count: AtomicUint,
     // The runtime that the actor belongs to
@@ -187,7 +187,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     fn new(actor: A, runtime: RuntimeWeak) -> Box<CellInner<A, Msg, Ret>> {
         let mut ret = box CellInner {
             data: CellData::new(),
-            state: AtomicUint::new(New as uint),
+            state: CellState::new(),
             ref_count: AtomicUint::new(0),
             runtime: runtime,
             mailbox: LinkedQueue::new(),
@@ -202,6 +202,11 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     fn handle(&self) -> Cell<A, Msg, Ret> {
         self.retain();
         Cell { inner: unsafe { mem::transmute(self) } }
+    }
+
+    fn to_ref(&self) -> CellRef {
+        self.retain();
+        CellRef::new(CellPtr::new(self))
     }
 
     /*
@@ -239,67 +244,69 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     }
 
     fn maybe_schedule(&self, spawning: bool) -> bool {
-        let mut expect = self.state.load(Relaxed);
+        let mut curr = self.state.load();
 
         loop {
-            let curr: State = FromPrimitive::from_uint(expect)
-                .expect("[BUG] invalid state");
-
             debug!("deliver_event; state={}; spawning={}", curr, spawning);
 
-            let next = match curr {
-                // Cases in which there is never a need to schedule
-                Scheduled | Pending | Shutdown | Crashed => return false,
+            let next = match curr.lifecycle() {
                 // When in the initial state, only request a schedule when the event is a spawn
                 New => return spawning,
-                // If the actor is currently idle, it needs to be scheduled to
-                // process the new message. Transition to a Scheduled state.
-                Idle => Scheduled,
-                // If the actor is currently running, there is no need to
-                // schedule it, but it needs to be signaled that there are new
-                // messages to process. Transition to the Pending state.
-                Running => Pending,
+                Active | Terminating => {
+                    // TODO: Consider not scheduling the actor on normal
+                    // messages when terminating, instead discard the message
+                    // immediately
+                    match curr.schedule() {
+                        Idle => curr.with_schedule(Scheduled),
+                        Running => curr.with_schedule(Pending),
+                        Scheduled | Pending => return false,
+                    }
+                }
+                Terminated => return false,
             };
 
-            let actual = self.state.compare_and_swap(expect, next as uint, Relaxed);
+            let actual = self.state.compare_and_swap(curr, next);
 
-            if actual == expect {
-                match next {
-                    Scheduled => {
-                        debug!("scheduling actor");
-                        return true;
-                    }
-                    _ => return false, // Only other option is Pending
+            if actual == curr {
+                match next.schedule() {
+                    Scheduled => return true,
+                    _ => return false,
                 }
             }
 
-            // CAS failed, try again
-            expect = actual;
+            curr = actual;
         }
     }
 
-    fn process_queue(&mut self, initial: bool) -> bool {
-        debug!("Cell::process_queue; initial={}", initial);
-
-        // If this is the first call, the actor has not yet been spawned
-        let mut is_spawned = !initial;
+    fn process_mailbox(&mut self, mut is_spawned: bool, mut is_terminated: bool) -> bool {
+        debug!("Cell::process_mailbox; is_spawned={}; is_terminated={}", is_spawned, is_terminated);
 
         // First process all system events. The Spawn message is guaranteed to
         // be delivered by the time this function is called, however, any
         // number of other messages might also have been delivered. Drain the
         // system event queue first in order to ensure that Spawn is called.
         while let Some(event) = self.sys_mailbox.take() {
-            // Track whether the event was a spawn
-            if event.is_spawn() {
-                is_spawned = true;
+            match event {
+                Spawn => is_spawned = true,
+                Terminate => is_terminated = true,
+                _ => {}
             }
 
             self.process_sys_event(event, is_spawned);
         }
 
+        // If is terminating, drain the queue here
+        if is_terminated {
+            // No need to schedule again
+            return false;
+        }
+
         // Process a single user event
         if let Some(event) = self.mailbox.take() {
             self.process_event(event);
+            // Before adding batching, it is important to note that it is
+            // possible for the cell state to transition to Terminating after
+            // processing an event.
             return true;
         }
 
@@ -331,8 +338,12 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
                 // Spawn the cell as a child of the current actor
                 self.link_child(cell, is_spawned);
             }
-            Terminated(_) => {
-                // A child actor terminated
+            Terminate => {
+                // Cell has been requested to terminate
+                self.terminate();
+            }
+            ChildTerminated(cell) => {
+                // A child actor terminated. Unlink the child
                 unimplemented!();
             }
         }
@@ -358,9 +369,73 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     }
 
     fn spawn_children(&self) {
-        for child in self.data.child_iter() {
+        for child in self.child_iter() {
             child.deliver_sys_event(Spawn);
         }
+    }
+
+    /// Initialize termination of Cell.
+    ///
+    /// Dispatches Terminate messages to all
+    /// children. If there are no children, completes the termination process.
+    /// If there are children, the Cell will wait until all children have
+    /// acknowledged the termination before finishing terminating itself.
+    fn initialize_termination(&self) {
+        for child in self.child_iter() {
+            child.deliver_sys_event(Terminate);
+        }
+
+        if !self.has_children() {
+            self.complete_termination();
+        }
+    }
+
+    /// Completes termination of the cell and notifies supervisor.
+    ///
+    /// By this point, all children are terminated. Transitions the state to
+    /// Terminated, deallocates the actor (not the Cell) and notifies the
+    /// supervisor that the Cell has been terminated.
+    fn complete_termination(&self) {
+        // First, transition to a terminated state
+        let mut curr = self.state.load();
+
+        loop {
+            debug!("complete_termination; curr-state={};", curr);
+
+            // The cell must be in the terminating state or something is very
+            // wrong.
+            assert!(curr.lifecycle() == Terminating, "invalid state {}", curr);
+
+            // Transition
+            let actual = self.state.compare_and_swap(curr, curr.with_lifecycle(Terminated));
+
+            if actual == curr {
+                break;
+            }
+
+            curr = actual;
+        }
+
+        // Notify the supervisor that the cell has been terminated
+        if let Some(supervisor) = self.supervisor() {
+            supervisor.deliver_sys_event(ChildTerminated(self.to_ref()));
+        }
+
+        // 3) deallocate actor
+    }
+
+    /// Iterate over supervised cells
+    fn child_iter<'a>(&'a self) -> ChildIter<'a> {
+        ChildIter { next: self.data.children }
+    }
+
+    /// True if the cell has child cells to supervise
+    fn has_children(&self) -> bool {
+        !self.data.children.is_null()
+    }
+
+    fn supervisor(&self) -> Option<&(CellObj+Send+Sync)> {
+        self.data.supervisor.cell_obj()
     }
 
     // Pretty hacky
@@ -397,68 +472,102 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
 }
 
 impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellObj for CellInner<A, Msg, Ret> {
+    // Execute a single iteration of the actor, note that this could happen
+    // while the Actor is currently running.
+    fn tick(&mut self) -> bool {
+        debug!("Cell::tick");
+
+        // Transition the cell to the running state
+        let mut before = self.state.load();
+        let mut next;
+
+        loop {
+            // Transition the schedule state
+            next = match before.schedule() {
+                // If the cell is currently being executed on another thread,
+                // abort processing
+                Running | Pending => return false,
+                Scheduled => before.with_schedule(Running),
+                Idle => panic!("unexpected state {}", before),
+            };
+
+            let actual = self.state.compare_and_swap(before, next);
+
+            if actual == before {
+                break;
+            }
+
+            before = actual;
+        }
+
+        // Process the actor's mailbox, returns whether the actor needs to be
+        // rescheduled (more work to be done)
+        let reschedule = self.process_mailbox(
+            before.lifecycle() != New,   // Whether the actor has been spawned already
+            next.lifecycle() != Active); // Whether the actor is terminating / terminated
+
+        // Transition to next state
+        let mut curr = self.state.load();
+        let mut next;
+
+        loop {
+            next = match curr.schedule() {
+                Pending => curr.with_schedule(Scheduled),
+                Running => {
+                    if reschedule {
+                        curr.with_schedule(Scheduled)
+                    } else {
+                        curr.with_schedule(Idle)
+                    }
+                }
+                Idle | Scheduled => panic!("unexpected state {}", curr),
+            };
+
+            let actual = self.state.compare_and_swap(curr, next);
+
+            if actual == curr {
+                break;
+            }
+
+            // CAS failed, try again
+            curr = actual
+        }
+
+        if curr.lifecycle() == Terminating && before.lifecycle() != Terminating {
+            // The actor signaled that it wishes to terminate. Begin
+            // termination process
+            self.initialize_termination();
+        }
+
+        next.schedule() == Scheduled
+    }
+
     // self.deliver_sys_event(Link(cell))
     fn deliver_sys_event(&self, event: SysEvent) -> bool {
         CellInner::deliver_sys_event(self, event)
     }
 
-    // Execute a single iteration of the actor
-    fn tick(&mut self) -> bool {
-        debug!("Cell::tick");
-
-        // Transition the cell to the running state
-        let mut expect = self.state.load(Relaxed);
-        let mut initial = false; // Is this the first call
+    // Should only be called from context of the running actor. Flags the actor
+    // for termination after message has been processed
+    fn terminate(&self) {
+        let mut curr = self.state.load();
 
         loop {
-            let curr: State = FromPrimitive::from_uint(expect)
-                .expect("[BUG] invalid state");
+            debug!("CellObj::terminate; curr-state={};", curr);
 
-            let next = match curr {
-                // If currently running, then nothing to do
-                Running | Shutdown | Crashed => return false,
-                New => {
-                    initial = true;
-                    Running
-                }
-                Scheduled => Running,
-                Pending | Idle => panic!("unexpected state {}", curr),
+            let next = match curr.lifecycle() {
+                Active => curr.with_lifecycle(Terminating),
+                Terminating => return,
+                New | Terminated => panic!("unexpected state {}", curr),
             };
 
-            let actual = self.state.compare_and_swap(expect, next as uint, Relaxed);
+            let actual = self.state.compare_and_swap(curr, next);
 
-            if actual == expect {
-                break;
+            if actual == curr {
+                return;
             }
 
-            // CAS failed, try again
-            expect = actual;
-        }
-
-        let reschedule = self.process_queue(initial);
-
-        // Transition to next state
-        let mut expect = self.state.load(Relaxed);
-
-        loop {
-            let curr: State = FromPrimitive::from_uint(expect)
-                .expect("[BUG] invalid state");
-
-            let next = match curr {
-                Pending => Scheduled,
-                Running => if reschedule { Scheduled } else { Idle },
-                Shutdown | Crashed => return false,
-                New | Scheduled | Idle => panic!("unexpected state {}", curr),
-            };
-
-            let actual = self.state.compare_and_swap(expect, next as uint, Relaxed);
-
-            if actual == expect {
-                return next == Scheduled;
-            }
-
-            // CAS failed, try again
-            expect = actual
+            curr = actual;
         }
     }
 
@@ -508,11 +617,10 @@ impl CellData {
         self.children.push_sibling(ptr);
         self.children = ptr;
 
-        ptr.cell_obj()
+        ptr.cell_obj().expect("CellObj should exist at this point")
     }
 
-    fn child_iter<'a>(&'a self) -> ChildIter<'a> {
-        ChildIter { next: self.children }
+    fn unlink(&mut self) -> CellRef {
     }
 }
 
@@ -525,7 +633,7 @@ impl<'a> Iterator<&'a (CellObj+Send+Sync)> for ChildIter<'a> {
         if let Some(data) = self.next.cell_data() {
             let ret = self.next.cell_obj();
             self.next = data.next_sibling;
-            return Some(ret);
+            return ret;
         }
 
         None
@@ -537,8 +645,8 @@ struct CellPtr {
 }
 
 impl CellPtr {
-    fn new<M: Send, R: Async, A: Actor<M, R>>(cell: &Cell<A, M, R>) -> CellPtr {
-        CellPtr { cell: unsafe { mem::transmute(cell.inner()) } }
+    fn new<M: Send, R: Async, A: Actor<M, R>>(cell: &CellInner<A, M, R>) -> CellPtr {
+        CellPtr { cell: unsafe { mem::transmute(cell) } }
     }
 
     fn null() -> CellPtr {
@@ -565,18 +673,21 @@ impl CellPtr {
         }
     }
 
-    // TODO: Should this return Option?
-    fn cell_obj<'a>(&self) -> &'a (CellObj+Send+Sync) {
+    fn cell_obj<'a>(&self) -> Option<&'a (CellObj+Send+Sync)> {
+        if self.cell.is_null() {
+            return None;
+        }
+
         unsafe {
             let data: &CellData = mem::transmute(self.cell);
-            mem::transmute(TraitObject {
+            Some(mem::transmute(TraitObject {
                 data: mem::transmute(data),
                 vtable: data.vtable,
-            })
+            }))
         }
     }
 
-    fn cell_obj_mut<'a>(&mut self) -> &'a mut (CellObj+Send+Sync) {
+    fn cell_obj_mut<'a>(&mut self) -> Option<&'a mut (CellObj+Send+Sync)> {
         unsafe { mem::transmute(self.cell_obj()) }
     }
 
@@ -597,4 +708,94 @@ impl Clone for CellPtr {
     fn clone(&self) -> CellPtr {
         CellPtr { cell: self.cell }
     }
+}
+
+struct CellState {
+    state: AtomicUint,
+}
+
+impl CellState {
+    fn new() -> CellState {
+        CellState {
+            state: AtomicUint::new(State::new().as_uint()),
+        }
+    }
+
+    fn load(&self) -> State {
+        State { val: self.state.load(Relaxed) }
+    }
+
+    fn compare_and_swap(&self, old: State, new: State) -> State {
+        let curr = self.state.compare_and_swap(old.as_uint(), new.as_uint(), Relaxed);
+        State::load(curr)
+    }
+}
+
+#[deriving(PartialEq)]
+struct State {
+    // Bits 0~3 -> ScheduleState
+    // Bits 4~7 -> Lifecycle
+    val: uint,
+}
+
+const SCHEDULE_MASK: uint = 3;
+
+const LIFECYCLE_OFFSET: uint = 2;
+const LIFECYCLE_MASK: uint = 3 << LIFECYCLE_OFFSET;
+
+impl State {
+    fn new() -> State {
+        let val = Schedule::Idle as uint | Lifecycle::New as uint;
+        State { val: val }
+    }
+
+    fn load(val: uint) -> State {
+        State { val: val }
+    }
+
+    fn schedule(&self) -> Schedule {
+        FromPrimitive::from_uint(self.val & SCHEDULE_MASK)
+            .expect("unexpected state value")
+    }
+
+    fn with_schedule(&self, schedule: Schedule) -> State {
+        let val = self.val & !SCHEDULE_MASK | schedule as uint;
+        State { val: val }
+    }
+
+    fn lifecycle(&self) -> Lifecycle {
+        FromPrimitive::from_uint(self.val & LIFECYCLE_MASK)
+            .expect("unexpected state value")
+    }
+
+    fn with_lifecycle(&self, lifecycle: Lifecycle) -> State {
+        let val = self.val & !LIFECYCLE_MASK | lifecycle as uint;
+        State { val: val }
+    }
+
+    fn as_uint(&self) -> uint {
+        self.val
+    }
+}
+
+impl fmt::Show for State {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        write!(fmt, "{} | {}", self.schedule(), self.lifecycle())
+    }
+}
+
+#[deriving(Show, FromPrimitive, PartialEq)]
+enum Schedule {
+    Idle      = 0,
+    Scheduled = 1,
+    Running   = 2,
+    Pending   = 3,
+}
+
+#[deriving(Show, FromPrimitive, PartialEq)]
+enum Lifecycle {
+    New         = 0 << LIFECYCLE_OFFSET,
+    Active      = 1 << LIFECYCLE_OFFSET,
+    Terminating = 2 << LIFECYCLE_OFFSET,
+    Terminated  = 3 << LIFECYCLE_OFFSET,
 }
