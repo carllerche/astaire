@@ -28,7 +28,8 @@ use syncbox::{Consume, Produce, LinkedQueue};
  *
  * ## TODO
  *
- * Figure out how to deal w/ messages when the actor is terminating.
+ * - Figure out how to deal w/ messages when the actor is terminating.
+ * - Restructure layout to reduce false sharing
  */
 pub struct Cell<A, M: Send, R: Async> {
     inner: *mut CellInner<A, M, R>,
@@ -292,7 +293,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
                 _ => {}
             }
 
-            self.process_sys_event(event, is_spawned);
+            self.process_sys_message(event, is_spawned, is_terminated);
         }
 
         // If is terminating, drain the queue here
@@ -303,7 +304,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
 
         // Process a single user event
         if let Some(event) = self.mailbox.take() {
-            self.process_event(event);
+            self.process_message(event);
             // Before adding batching, it is important to note that it is
             // possible for the cell state to transition to Terminating after
             // processing an event.
@@ -314,8 +315,8 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
         return false;
     }
 
-    fn process_event(&mut self, event: Event<Msg, Ret>) {
-        debug!("processing event; event={}", event);
+    fn process_message(&mut self, event: Event<Msg, Ret>) {
+        debug!("processing message; message={}", event);
 
         match event {
             Message(msg) => self.receive_msg(msg),
@@ -323,7 +324,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
         }
     }
 
-    fn process_sys_event(&mut self, event: SysEvent, is_spawned: bool) {
+    fn process_sys_message(&mut self, event: SysEvent, is_spawned: bool, is_terminated: bool) {
         debug!("processing sys event; event={}", event);
 
         match event {
@@ -342,9 +343,9 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
                 // Cell has been requested to terminate
                 self.terminate();
             }
-            ChildTerminated(cell) => {
+            ChildTerminated(child) => {
                 // A child actor terminated. Unlink the child
-                unimplemented!();
+                self.unlink_child(child, is_terminated);
             }
         }
     }
@@ -368,6 +369,14 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
         }
     }
 
+    fn unlink_child(&mut self, child: CellRef, is_terminated: bool) {
+        self.data.unlink_child(child);
+
+        if is_terminated && !self.has_children() {
+            self.complete_termination();
+        }
+    }
+
     fn spawn_children(&self) {
         for child in self.child_iter() {
             child.deliver_sys_event(Spawn);
@@ -380,7 +389,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     /// children. If there are no children, completes the termination process.
     /// If there are children, the Cell will wait until all children have
     /// acknowledged the termination before finishing terminating itself.
-    fn initialize_termination(&self) {
+    fn initialize_termination(&mut self) {
         for child in self.child_iter() {
             child.deliver_sys_event(Terminate);
         }
@@ -395,7 +404,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     /// By this point, all children are terminated. Transitions the state to
     /// Terminated, deallocates the actor (not the Cell) and notifies the
     /// supervisor that the Cell has been terminated.
-    fn complete_termination(&self) {
+    fn complete_termination(&mut self) {
         // First, transition to a terminated state
         let mut curr = self.state.load();
 
@@ -416,12 +425,15 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
             curr = actual;
         }
 
-        // Notify the supervisor that the cell has been terminated
+        // Notify the supervisor that the cell has been terminated. All cells
+        // will have a supervisor except for the Init actor.
         if let Some(supervisor) = self.supervisor() {
             supervisor.deliver_sys_event(ChildTerminated(self.to_ref()));
         }
 
-        // 3) deallocate actor
+        // Drop the actor. After this point, the actor field is uninitialized
+        // memory and should not be used again.
+        self.release_actor();
     }
 
     /// Iterate over supervised cells
@@ -450,6 +462,10 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
 
     fn retain(&self) {
         self.ref_count.fetch_add(1, Relaxed);
+    }
+
+    fn release_actor(&mut self) {
+        unsafe { drop(ptr::read(&self.actor)); }
     }
 
     // Decrement the ref count
@@ -610,17 +626,45 @@ impl CellData {
         }
     }
 
+    /// Pushes the cell onto the head of the supervised cells linked list.
+    ///
+    /// Must be called from the supervisor,
     fn link_child(&mut self, child: CellRef) -> &(CellObj+Send+Sync) {
         // Convert CellRef -> a ptr, Drop should not be called
-        let ptr = child.to_ptr();
+        let mut ptr = child.to_ptr();
 
-        self.children.push_sibling(ptr);
+        // Set the current head's previous ptr to the new cell
+        if let Some(head) = self.children.cell_data_mut() {
+            head.prev_sibling = ptr;
+        }
+
+        // Set the new cell's next ptr to the current head
+        ptr.cell_data_mut().expect("CellPtr should not be null")
+            .next_sibling = self.children;
+
+        // Set the entry pointer to the new cell
         self.children = ptr;
 
+        // Return a ref to the new cell
         ptr.cell_obj().expect("CellObj should exist at this point")
     }
 
-    fn unlink(&mut self) -> CellRef {
+    /// Removes the child cell from the list of supervised cells.
+    ///
+    /// Must be called from the supervisor.
+    fn unlink_child(&mut self, mut child: CellRef) -> CellRef {
+        let child_data = child.ptr.cell_data_mut().expect("CellRef should not be null");
+
+        if let Some(next) = child_data.next_sibling.cell_data_mut() {
+            next.prev_sibling = child_data.prev_sibling;
+        }
+
+        match child_data.prev_sibling.cell_data_mut() {
+            Some(prev) => prev.next_sibling = child_data.next_sibling,
+            None => self.children = child_data.next_sibling,
+        }
+
+        CellRef::new(child.ptr)
     }
 }
 
@@ -661,16 +705,6 @@ impl CellPtr {
         let obj = cell as &(CellObj+Sync+Send);
         let obj: TraitObject = unsafe { mem::transmute(obj) };
         obj.vtable
-    }
-
-    fn push_sibling(&mut self, mut cell: CellPtr) {
-        if let Some(curr) = self.cell_data_mut() {
-            curr.prev_sibling = cell;
-        }
-
-        if let Some(data) = cell.cell_data_mut() {
-            data.next_sibling = *self;
-        }
     }
 
     fn cell_obj<'a>(&self) -> Option<&'a (CellObj+Send+Sync)> {
@@ -798,4 +832,13 @@ enum Lifecycle {
     Active      = 1 << LIFECYCLE_OFFSET,
     Terminating = 2 << LIFECYCLE_OFFSET,
     Terminated  = 3 << LIFECYCLE_OFFSET,
+}
+
+#[cfg(test)]
+mod test {
+
+    #[test]
+    pub fn test_stuff() {
+        assert!(true);
+    }
 }

@@ -8,5 +8,5 @@ extern crate astaire;
 #[phase(plugin, link)]
 extern crate log;
 
-mod test_actor_system;
-mod test_future_val;
+// mod test_actor_system;
+// mod test_future_val;
