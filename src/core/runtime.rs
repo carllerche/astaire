@@ -6,7 +6,7 @@
 use {Actor, ActorRef};
 use actor_ref;
 use self::State::*;
-use core::{Cell, Event, SysEvent, Scheduler, currently_scheduled};
+use core::{Cell, CellRef, Event, SysEvent, Scheduler, currently_scheduled};
 use core::SysEvent::{Spawn};
 use sys::{Init, User};
 use util::Async;
@@ -53,13 +53,38 @@ impl Runtime {
         self.inner.dispatch(cell, event);
     }
 
-    /// Spawn a new actor
-    pub fn spawn<M1: Send, R1: Async, A1: Actor<M1, R1>, M2: Send, R2: Async, A2: Actor<M2, R2>>(&self, actor: A1, supervisor: Option<&ActorRef<A2, M2, R2>>) -> ActorRef<A1, M1, R1> {
-        self.inner.spawn(Cell::new(actor, self.weak()), supervisor)
+    pub fn sys_dispatch(&self, cell: CellRef, event: SysEvent) {
+        self.inner.sys_dispatch(cell, event);
     }
 
-    fn weak(&self) -> RuntimeWeak {
+    /// Spawn a new actor
+    pub fn spawn<M1: Send, R1: Async, A1: Actor<M1, R1>, M2: Send, R2: Async, A2: Actor<M2, R2>>(&self, actor: A1, supervisor: Option<&ActorRef<A2, M2, R2>>) -> ActorRef<A1, M1, R1> {
+        self.inner.spawn(Cell::new(actor, self.supervisor_ref(supervisor), self.weak()))
+    }
+
+    pub fn user_ref(&self) -> Option<ActorRef<User, (), ()>> {
+        self.inner.sys_actors.as_ref().map(|sys| sys.user.clone())
+    }
+
+    pub fn weak(&self) -> RuntimeWeak {
         RuntimeWeak::new(self.inner.downgrade())
+    }
+
+    fn supervisor_ref<M: Send, R: Async, A: Actor<M, R>>(&self, supervisor: Option<&ActorRef<A, M, R>>) -> Option<CellRef> {
+        match supervisor {
+            Some(supervisor) => Some(actor_ref::to_ref(supervisor)),
+            None => {
+                match unsafe { currently_scheduled() } {
+                    Some(curr) => Some(curr.clone()),
+                    None => {
+                        match self.inner.sys_actors {
+                            Some(ref sys) => Some(actor_ref::to_ref(&sys.user)),
+                            None => None,
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -163,29 +188,12 @@ impl RuntimeInner {
     }
 
     /// Spawn a new actor
-    pub fn spawn<M1: Send, R1: Async, A1: Actor<M1, R1>, M2: Send, R2: Async, A2: Actor<M2, R2>>(&self, cell: Cell<A1, M1, R1>, supervisor: Option<&ActorRef<A2, M2, R2>>) -> ActorRef<A1, M1, R1> {
+    fn spawn<M: Send, R: Async, A: Actor<M, R>>(&self, cell: Cell<A, M, R>) -> ActorRef<A, M, R> {
         debug!("spawning actor");
 
-        match supervisor {
-            Some(supervisor) => self.scheduler.spawn_link(cell.to_ref(), actor_ref::to_ref(supervisor)),
-            _ => {
-                // No specified supervisor, use the current actor
-                match unsafe { currently_scheduled() } {
-                    Some(curr) => self.scheduler.spawn_link(cell.to_ref(), curr.clone()),
-                    _ => {
-                        // No actor currently running, run under user actor
-                        match self.sys_actors {
-                            Some(ref sys) => self.scheduler.spawn_link(cell.to_ref(), actor_ref::to_ref(&sys.user)),
-                            _ => {
-                                // Currently booting up, this must be Init,
-                                // simply spawn
-                                self.sys_dispatch(cell.clone(), Spawn);
-                            }
-                        }
-
-                    }
-                }
-            }
+        match cell.supervisor() {
+            Some(supervisor) => self.sys_dispatch(supervisor, SysEvent::Link(cell.to_ref())),
+            None => self.sys_dispatch(cell.to_ref(), Spawn),
         }
 
         actor_ref::new(cell)
@@ -196,7 +204,7 @@ impl RuntimeInner {
         self.scheduler.dispatch(cell, event);
     }
 
-    fn sys_dispatch<M: Send, R: Async, A: Actor<M, R>>(&self, cell: Cell<A, M, R>, event: SysEvent) {
+    fn sys_dispatch(&self, cell: CellRef, event: SysEvent) {
         self.scheduler.sys_dispatch(cell, event);
     }
 }
@@ -209,6 +217,7 @@ impl Drop for RuntimeInner {
 }
 
 struct SysActors {
+    #[allow(dead_code)]
     init: ActorRef<Init, (), ()>,
     user: ActorRef<User, (), ()>,
 }

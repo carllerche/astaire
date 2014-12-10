@@ -21,6 +21,12 @@ impl<M: Send, R: Async, A: Actor<M, R>> ActorRef<A, M, R> {
     }
 }
 
+impl<M: Send, R: Async, A: Actor<M, R>> Clone for ActorRef<A, M, R> {
+    fn clone(&self) -> ActorRef<A, M, R> {
+        ActorRef { cell: self.cell.clone() }
+    }
+}
+
 /*
  * === Separated out to keep ActorRef public API clean ===
  */

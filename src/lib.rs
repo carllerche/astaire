@@ -1,8 +1,6 @@
 #![crate_name = "astaire"]
 #![feature(globs)]
 #![feature(phase)]
-#![feature(if_let)]
-#![feature(while_let)]
 #![feature(thread_local)]
 #![feature(associated_types)]
 #![feature(unboxed_closures)]

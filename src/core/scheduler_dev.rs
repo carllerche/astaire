@@ -53,14 +53,6 @@ impl Scheduler {
         self.inner.shutdown(timeout);
     }
 
-    // Must be separated out to support using CellRefs vs. something else
-    pub fn spawn_link(&self, cell: CellRef, supervisor: CellRef) {
-        if supervisor.deliver_sys_event(SysEvent::Link(cell)) {
-            debug!("  cell requires scheduling");
-            self.inner.schedule_cell(supervisor);
-        }
-    }
-
     // Dispatches the event to the specified actor, scheduling it if needed
     pub fn dispatch<M: Send, R: Async, A: Actor<M, R>>(&self, cell: Cell<A, M, R>, event: Event<M, R>) {
         debug!("dispatching event to cell");
@@ -73,13 +65,13 @@ impl Scheduler {
     }
 
     // Dispatches the event to the specified actor, scheduling it if needed
-    pub fn sys_dispatch<M: Send, R: Async, A: Actor<M, R>>(&self, cell: Cell<A, M, R>, event: SysEvent) {
+    pub fn sys_dispatch(&self, cell: CellRef, event: SysEvent) {
         debug!("dispatching sys event to cell");
 
         // TODO: Handle dispatching to shutdown / crashed actor
         if cell.deliver_sys_event(event) {
             debug!("  cell requires scheduling");
-            self.inner.schedule_cell(cell.to_ref());
+            self.inner.schedule_cell(cell);
         }
     }
 }
