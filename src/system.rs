@@ -9,6 +9,10 @@ pub fn spawn<M: Send, R: Async, A: Actor<M, R>>(actor: A) -> ActorRef<A, M, R> {
     Runtime::current().spawn(actor, None::<&ActorRef<A, M, R>>)
 }
 
+pub fn terminate() {
+    Runtime::current().terminate_current()
+}
+
 pub struct System {
     runtime: Runtime,
 }

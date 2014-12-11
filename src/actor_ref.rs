@@ -15,9 +15,7 @@ pub struct ActorRef<A, M: Send, R: Async> {
 impl<M: Send, R: Async, A: Actor<M, R>> ActorRef<A, M, R> {
     /// Sends a message to the specified actor
     pub fn send(&self, msg: M) -> R {
-        let (request, response): (Request<M, R>, R) = Async::request(msg);
-        self.cell.send_request(request);
-        response
+        self.cell.send(msg)
     }
 }
 

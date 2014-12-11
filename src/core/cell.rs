@@ -41,8 +41,12 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> Cell<A, Msg, Ret> {
         Cell { inner: unsafe { mem::transmute(inner) } }
     }
 
-    pub fn send_request(&self, request: Request<Msg, Ret>) {
+    pub fn send(&self, msg: Msg) -> Ret {
+        use util::Async;
+
+        let (request, response): (Request<Msg, Ret>, Ret) = Async::request(msg);
         self.inner().send_request(request, self.clone());
+        response
     }
 
     pub fn deliver_event(&self, event: Event<Msg, Ret>) -> bool {
@@ -100,6 +104,10 @@ impl CellRef {
 
     pub fn tick(&mut self) -> bool {
         self.cell_obj_mut().tick()
+    }
+
+    pub fn terminate(&self) {
+        self.cell_obj().terminate()
     }
 
     // Get the runtime behind this cell
@@ -914,7 +922,7 @@ mod test {
 
     #[test]
     pub fn test_basic_cell_operation() {
-        let cell = new_cell(MyActor);
+        let cell = new_cell(MyActor::new());
         let mut supervisor = cell.supervisor().unwrap();
 
         // The state of the cell starts off as New
@@ -942,6 +950,10 @@ mod test {
         assert!(!cell.to_ref().tick());
         assert!(cell.state().lifecycle() == Active, "actual={}", cell.state());
         assert!(cell.state().schedule() == Idle, "actual={}", cell.state());
+
+        // TODO: test termination
+        cell.send("terminate");
+        assert!(cell.state().schedule() == Scheduled, "actual={}", cell.state());
     }
 
     #[test]
@@ -954,11 +966,23 @@ mod test {
      *
      */
 
-    struct MyActor;
+    struct MyActor {
+        got: Vec<&'static str>
+    }
 
-    impl Actor<uint> for MyActor {
-        fn receive(&mut self, msg: uint) {
-            println!("Got {}", msg);
+    impl MyActor {
+        fn new() -> MyActor {
+            MyActor { got: vec![] }
+        }
+    }
+
+    impl Actor<&'static str> for MyActor {
+        fn receive(&mut self, msg: &'static str) {
+            self.got.push(msg);
+
+            if msg == "terminate" {
+                ::terminate();
+            }
         }
     }
 

@@ -19,6 +19,7 @@ pub use actor_ref::ActorRef;
 pub use system::{
     System,
     spawn,
+    terminate,
 };
 
 mod core;

@@ -62,6 +62,13 @@ impl Runtime {
         self.inner.spawn(Cell::new(actor, self.supervisor_ref(supervisor), self.weak()))
     }
 
+    pub fn terminate_current(&self) {
+        unsafe {
+            currently_scheduled().expect("terminate() must be called from a running actor")
+                .terminate()
+        }
+    }
+
     pub fn user_ref(&self) -> Option<ActorRef<User, (), ()>> {
         self.inner.sys_actors.as_ref().map(|sys| sys.user.clone())
     }
