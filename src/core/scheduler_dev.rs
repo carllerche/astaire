@@ -81,7 +81,6 @@ impl SchedulerInner {
         let mut lock = self.state.lock();
 
         if *lock == Running {
-            debug!("enqueuing terimate token");
             *lock = Terminating;
             self.enqueue(Terminate);
         }

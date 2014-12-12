@@ -18,15 +18,6 @@ mod scheduler;
 #[path = "scheduler_dev.rs"]
 mod scheduler;
 
-/*
-enum Event<M: Send, R: Async> {
-    Message(Request<M, R>),
-    Spawn,
-    Link(CellRef),
-    Exec(Box<FnOnce<(),()> + Send>),
-}
-*/
-
 enum Event<M: Send, R: Async> {
     Message(Request<M, R>),
     Exec(Box<FnOnce<(), ()> + Send>),
@@ -46,15 +37,6 @@ impl<M: Send, R: Async> Event<M, R> {
 
     fn exec(f: Box<FnOnce<(),()> + Send>) -> Event<M, R> {
         Exec(f)
-    }
-}
-
-impl SysEvent {
-    fn is_spawn(&self) -> bool {
-        match *self {
-            Spawn => true,
-            _ => false,
-        }
     }
 }
 

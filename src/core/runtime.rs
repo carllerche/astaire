@@ -69,6 +69,7 @@ impl Runtime {
         }
     }
 
+    #[allow(dead_code)]
     pub fn user_ref(&self) -> Option<ActorRef<User, (), ()>> {
         self.inner.sys_actors.as_ref().map(|sys| sys.user.clone())
     }
@@ -218,7 +219,6 @@ impl RuntimeInner {
 
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
-        debug!("dropping RuntimeInner");
         self.scheduler.shutdown(Duration::milliseconds(0));
     }
 }

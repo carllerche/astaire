@@ -204,7 +204,7 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     fn new(actor: A, supervisor: Option<CellRef>, runtime: RuntimeWeak) -> Box<CellInner<A, Msg, Ret>> {
         let mut ret = box CellInner {
             core: CellCore::new(supervisor),
-            ref_count: AtomicUint::new(0),
+            ref_count: AtomicUint::new(1),
             runtime: runtime,
             mailbox: LinkedQueue::new(),
             sys_mailbox: LinkedQueue::new(),
@@ -252,17 +252,18 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
     fn deliver_sys_event(&self, event: SysEvent) -> bool {
         debug!("deliver_sys_event; event={}", event);
 
-        let spawning = event.is_spawn();
-
         // First enqueue the message:
         self.sys_mailbox.put(event).ok().unwrap();
 
         // Schedule the actor if needed
-        self.core.maybe_schedule(spawning)
+        self.core.maybe_schedule(true)
     }
 
-    fn process_mailbox(&mut self, mut is_spawned: bool, mut is_terminated: bool) -> bool {
-        debug!("Cell::process_mailbox; is_spawned={}; is_terminated={}", is_spawned, is_terminated);
+    fn process_mailbox(&mut self, state: State) -> bool {
+        let mut is_spawned = !state.is_new();
+        let mut is_inactive = !state.is_active();
+
+        debug!("Cell::process_mailbox; is_spawned={}; is_inactive={}", is_spawned, is_inactive);
 
         // First process all system events. The Spawn message is guaranteed to
         // be delivered by the time this function is called, however, any
@@ -271,15 +272,15 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
         while let Some(event) = self.sys_mailbox.take() {
             match event {
                 Spawn => is_spawned = true,
-                Terminate => is_terminated = true,
+                Terminate => is_inactive = true,
                 _ => {}
             }
 
-            self.process_sys_message(event, is_spawned, is_terminated);
+            self.process_sys_message(event, is_spawned, is_inactive);
         }
 
         // If is terminating, drain the queue here
-        if is_terminated {
+        if is_inactive {
             // No need to schedule again
             return false;
         }
@@ -459,6 +460,12 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellInner<A, Msg, Ret> {
         }
     }
 
+    /// Debug
+    fn ident(&self) -> uint {
+        let addr: uint = unsafe { mem::transmute(self) };
+        addr
+    }
+
     fn retain(&self) {
         self.ref_count.fetch_add(1, Relaxed);
     }
@@ -490,38 +497,36 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellObj for CellInner<A, Msg, Re
     // Execute a single iteration of the actor, note that this could happen
     // while the Actor is currently running.
     fn tick(&mut self) -> bool {
-        debug!("Cell::tick");
+        debug!("Cell::tick; ident=0x{:x}", self.ident());
 
         // Transition the cell to the running state
-        let mut before = self.core.state.load();
-        let mut next;
+        let mut curr = self.core.state.load();
 
         loop {
             // Transition the schedule state
-            next = match before.schedule() {
+            let next = match curr.schedule() {
                 // If the cell is currently being executed on another thread,
                 // abort processing
                 Running | Pending => return false,
-                Scheduled => before.with_schedule(Running),
-                Idle => panic!("unexpected state {}", before),
+                Scheduled => curr.with_schedule(Running),
+                Idle => panic!("unexpected state {}", curr),
             };
 
-            let actual = self.core.state.compare_and_swap(before, next);
+            let actual = self.core.state.compare_and_swap(curr, next);
 
-            if actual == before {
+            if actual == curr {
                 break;
             }
 
-            before = actual;
+            curr = actual;
         }
 
         // Process the actor's mailbox, returns whether the actor needs to be
         // rescheduled (more work to be done)
-        let reschedule = self.process_mailbox(
-            before.lifecycle() != New,   // Whether the actor has been spawned already
-            next.lifecycle() != Active); // Whether the actor is terminating / terminated
+        let reschedule = self.process_mailbox(curr);
 
         // Transition to next state
+        let is_active = curr.is_active();
         let mut curr = self.core.state.load();
         let mut next;
 
@@ -548,11 +553,13 @@ impl<Msg: Send, Ret: Async, A: Actor<Msg, Ret>> CellObj for CellInner<A, Msg, Re
             curr = actual
         }
 
-        if curr.lifecycle() == Terminating && before.lifecycle() != Terminating {
+        if curr.lifecycle() == Terminating && is_active {
             // The actor signaled that it wishes to terminate. Begin
             // termination process
             self.initialize_termination();
         }
+
+        debug!("Cell::tick complete; ident=0x{:x}", self.ident());
 
         next.schedule() == Scheduled
     }
@@ -645,15 +652,18 @@ impl CellCore {
         }
     }
 
-    fn maybe_schedule(&self, spawning: bool) -> bool {
+    fn maybe_schedule(&self, sys: bool) -> bool {
         let mut curr = self.state.load();
 
         loop {
-            debug!("  transition to schedule; state={}; spawning={}", curr, spawning);
+            debug!("  transition to schedule; state={}; sys-event={}", curr, sys);
 
             let next = match curr.lifecycle() {
                 New => {
-                    if !spawning { return false; }
+                    if !sys || curr.is_scheduled() {
+                        return false;
+                    }
+
                     curr.with_schedule(Scheduled)
                 }
                 Active | Terminating => {
@@ -883,6 +893,24 @@ impl State {
         State { val: val }
     }
 
+    fn is_new(&self) -> bool {
+        self.lifecycle() == New    // Whether the actor has been spawned already
+    }
+
+    fn is_active(&self) -> bool {
+        match self.lifecycle() {
+            New | Active => true,
+            _ => false,
+        }
+    }
+
+    fn is_scheduled(&self) -> bool {
+        match self.schedule() {
+            Scheduled => true,
+            _ => false,
+        }
+    }
+
     fn as_uint(&self) -> uint {
         self.val
     }
@@ -957,7 +985,125 @@ mod test {
     }
 
     #[test]
+    pub fn test_sending_message_before_spawned() {
+        let cell = new_cell(MyActor::new());
+
+        cell.send("hello");
+        assert!(cell.state().schedule() == Idle, "actual={}", cell.state());
+
+        cell.to_ref().deliver_sys_event(Spawn);
+        assert!(cell.state().schedule() == Scheduled, "actual={}", cell.state());
+
+        assert!(cell.to_ref().tick());
+        assert!(actor(&cell).got[0] == "hello");
+    }
+
+    #[test]
     pub fn test_receiving_terminate_before_spawn() {
+        let cell = new_cell(MyActor::new());
+
+        cell.send("hello");
+        assert!(cell.to_ref().deliver_sys_event(Terminate));
+        assert_eq!(cell.state().schedule(), Scheduled);
+
+        assert!(actor(&cell).got.len() == 0);
+    }
+
+    // Used a couple of times
+    fn three_actors() -> (Vec<Cell<MyActor, &'static str, ()>>, CellRef) {
+        // Create a bunch of cells
+        let cells = vec![
+            new_cell(MyActor::new()),
+            new_cell(MyActor::new()),
+            new_cell(MyActor::new())];
+
+        // Get supervisor
+        let mut supervisor = cells[0].supervisor().unwrap();
+
+        // Link children
+        for (i, cell) in cells.iter().enumerate() {
+            // Only the first link triggers scheduling
+            assert!(supervisor.deliver_sys_event(Link(cell.to_ref())) == (i == 0));
+        }
+
+        // Spawn supervisor
+        assert!(!supervisor.deliver_sys_event(Spawn));
+        assert!(supervisor.state().is_scheduled());
+
+        // Process supervisor
+        supervisor.tick();
+
+        for cell in cells.iter() {
+            // Cell is scheduled, execute it
+            assert!(cell.state().is_scheduled());
+            cell.to_ref().tick();
+
+            // Cell is spawned
+            assert!(cell.state().lifecycle() == Active);
+        }
+
+        (cells, supervisor)
+    }
+
+    #[test]
+    pub fn test_terminated_child_removed_from_supervision() {
+        // Create a bunch of cells
+        let (cells, mut supervisor) = three_actors();
+
+        // Terminate the middle one
+        assert!(cells[1].to_ref().deliver_sys_event(Terminate));
+        cells[1].to_ref().tick();
+
+        // Cell is terminated
+        assert!(cells[1].state().lifecycle() == Terminated);
+
+        // Supervisor still contains all children
+        for cell in cells.iter() {
+            assert!(supervisor.has_child(&cell.to_ref()));
+        }
+
+        // Supervisor is scheduled
+        assert!(supervisor.state().is_scheduled(), "actual={}", supervisor.state());
+        debug!("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
+        supervisor.tick();
+
+        // Supervisor has removed child from list of children
+        for (i, cell) in cells.iter().enumerate() {
+            assert!(supervisor.has_child(&cell.to_ref()) == (i != 1));
+        }
+    }
+
+    #[test]
+    pub fn test_terminating_supervisor_terminates_children() {
+        // Create a bunch of cells
+        let (cells, mut supervisor) = three_actors();
+
+        // Terminate the supervisor
+        assert!(supervisor.deliver_sys_event(Terminate));
+        supervisor.tick();
+
+        // The supervisor is in the terminating state waiting for children to
+        // complete their terimation
+        assert!(supervisor.state().lifecycle() == Terminating);
+
+        // The children are ready to be terminated
+        for cell in cells.iter() {
+            assert!(cell.state().is_scheduled());
+            cell.to_ref().tick();
+
+            assert!(cell.state().lifecycle() == Terminated);
+        }
+
+        // Supervisor is notified
+        assert!(supervisor.state().is_scheduled());
+        supervisor.tick();
+
+        // Supervisor is not terminated
+        assert!(supervisor.state().lifecycle() == Terminated);
+    }
+
+    #[test]
+    pub fn test_terminating_supervisor_terminates_children_recursively() {
     }
 
     /*
@@ -1018,6 +1164,10 @@ mod test {
 
             false
         }
+    }
+
+    fn actor<M: Send, R: Async, A: Actor<M, R>>(cell: &Cell<A, M, R>) -> &A {
+        cell.inner().actor()
     }
 
     fn new_cell<M: Send, R: Async, A: Actor<M, R>>(actor: A) -> Cell<A, M, R> {

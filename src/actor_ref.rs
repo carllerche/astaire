@@ -1,6 +1,5 @@
 use {Actor};
 use core::{Cell, CellRef};
-use core::future::Request;
 use util::{Async};
 
 // There are multiple kinds of actor refs:
