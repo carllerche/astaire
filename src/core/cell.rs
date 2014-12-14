@@ -30,6 +30,7 @@ use syncbox::{Consume, Produce, LinkedQueue};
  *
  * - Figure out how to deal w/ messages when the actor is terminating.
  * - Restructure layout to reduce false sharing
+ * - Assert that the linked child references the parent
  */
 pub struct Cell<A, M: Send, R: Async> {
     inner: *mut CellInner<A, M, R>,
@@ -770,6 +771,8 @@ impl<'a> Iterator<&'a (CellObj+Send+Sync)> for ChildIter<'a> {
     }
 }
 
+#[deriving(Copy)]
+#[allow(raw_pointer_deriving)]
 struct CellPtr {
     cell: *const (),
 }
@@ -851,7 +854,7 @@ impl CellState {
     }
 }
 
-#[deriving(PartialEq)]
+#[deriving(Copy, PartialEq)]
 struct State {
     // Bits 0~3 -> ScheduleState
     // Bits 4~7 -> Lifecycle
@@ -950,7 +953,7 @@ mod test {
 
     #[test]
     pub fn test_basic_cell_operation() {
-        let cell = new_cell(MyActor::new());
+        let cell = spawn(MyActor::new());
         let mut supervisor = cell.supervisor().unwrap();
 
         // The state of the cell starts off as New
@@ -986,7 +989,7 @@ mod test {
 
     #[test]
     pub fn test_sending_message_before_spawned() {
-        let cell = new_cell(MyActor::new());
+        let cell = spawn(MyActor::new());
 
         cell.send("hello");
         assert!(cell.state().schedule() == Idle, "actual={}", cell.state());
@@ -1000,7 +1003,7 @@ mod test {
 
     #[test]
     pub fn test_receiving_terminate_before_spawn() {
-        let cell = new_cell(MyActor::new());
+        let cell = spawn(MyActor::new());
 
         cell.send("hello");
         assert!(cell.to_ref().deliver_sys_event(Terminate));
@@ -1013,9 +1016,9 @@ mod test {
     fn three_actors() -> (Vec<Cell<MyActor, &'static str, ()>>, CellRef) {
         // Create a bunch of cells
         let cells = vec![
-            new_cell(MyActor::new()),
-            new_cell(MyActor::new()),
-            new_cell(MyActor::new())];
+            spawn(MyActor::new()),
+            spawn(MyActor::new()),
+            spawn(MyActor::new())];
 
         // Get supervisor
         let mut supervisor = cells[0].supervisor().unwrap();
@@ -1104,6 +1107,58 @@ mod test {
 
     #[test]
     pub fn test_terminating_supervisor_terminates_children_recursively() {
+        let cell1 = spawn(MyActor::new());
+        let cell2 = spawn_link(MyActor::new(), cell1.to_ref());
+        let cell3 = spawn_link(MyActor::new(), cell2.to_ref());
+
+        let mut supervisor = cell1.supervisor().unwrap();
+
+        // Link up all the cells
+        supervisor.deliver_sys_event(Link(cell1.to_ref()));
+        cell1.to_ref().deliver_sys_event(Link(cell2.to_ref()));
+        cell2.to_ref().deliver_sys_event(Link(cell3.to_ref()));
+
+        // Spawn the supervisor
+        supervisor.deliver_sys_event(Spawn);
+        supervisor.tick();
+
+        // Spawn the cells
+        for &cell in [&cell1, &cell2, &cell3].iter() {
+            assert!(cell.state().is_scheduled());
+            cell.to_ref().tick();
+            assert!(cell.state().lifecycle() == Active);
+        }
+
+        // Terminate the parent
+        cell1.to_ref().deliver_sys_event(Terminate);
+        cell1.to_ref().tick();
+        assert!(cell1.state().lifecycle() == Terminating);
+        assert!(!cell1.state().is_scheduled());
+
+        assert!(cell2.state().is_scheduled());
+        cell2.to_ref().tick();
+        assert!(cell2.state().lifecycle() == Terminating);
+        assert!(!cell1.state().is_scheduled());
+        assert!(!cell2.state().is_scheduled());
+
+        assert!(cell3.state().is_scheduled());
+        cell3.to_ref().tick();
+        assert!(cell3.state().lifecycle() == Terminated);
+        assert!(!cell1.state().is_scheduled());
+
+        assert!(cell2.state().is_scheduled());
+        cell2.to_ref().tick();
+        assert!(cell2.state().lifecycle() == Terminated);
+
+        assert!(cell1.state().is_scheduled());
+        cell1.to_ref().tick();
+        assert!(cell1.state().lifecycle() == Terminated);
+
+        assert!(supervisor.state().is_scheduled());
+        supervisor.tick();
+        assert!(supervisor.state().lifecycle() == Active);
+
+        assert!(!supervisor.has_child(&cell1.to_ref()));
     }
 
     /*
@@ -1170,12 +1225,15 @@ mod test {
         cell.inner().actor()
     }
 
-    fn new_cell<M: Send, R: Async, A: Actor<M, R>>(actor: A) -> Cell<A, M, R> {
-        let rt = runtime_weak();
-        let supervisor = rt.upgrade().unwrap().user_ref()
+    fn spawn<M: Send, R: Async, A: Actor<M, R>>(actor: A) -> Cell<A, M, R> {
+        let supervisor = runtime_weak().upgrade().unwrap().user_ref()
             .map(|aref| actor_ref::to_ref(&aref)).unwrap();
 
-        Cell::new(actor, Some(supervisor), rt)
+        spawn_link(actor, supervisor)
+    }
+
+    fn spawn_link<M: Send, R: Async, A: Actor<M, R>>(actor: A, supervisor: CellRef) -> Cell<A, M, R> {
+        Cell::new(actor, Some(supervisor), runtime_weak())
     }
 
     fn runtime_weak() -> RuntimeWeak {
