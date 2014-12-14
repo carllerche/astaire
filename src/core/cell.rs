@@ -1108,8 +1108,8 @@ mod test {
     #[test]
     pub fn test_terminating_supervisor_terminates_children_recursively() {
         let cell1 = spawn(MyActor::new());
-        let cell2 = spawn_link(MyActor::new(), cell1.to_ref());
-        let cell3 = spawn_link(MyActor::new(), cell2.to_ref());
+        let cell2 = spawn_parented(MyActor::new(), cell1.to_ref());
+        let cell3 = spawn_parented(MyActor::new(), cell2.to_ref());
 
         let mut supervisor = cell1.supervisor().unwrap();
 
@@ -1229,10 +1229,10 @@ mod test {
         let supervisor = runtime_weak().upgrade().unwrap().user_ref()
             .map(|aref| actor_ref::to_ref(&aref)).unwrap();
 
-        spawn_link(actor, supervisor)
+        spawn_parented(actor, supervisor)
     }
 
-    fn spawn_link<M: Send, R: Async, A: Actor<M, R>>(actor: A, supervisor: CellRef) -> Cell<A, M, R> {
+    fn spawn_parented<M: Send, R: Async, A: Actor<M, R>>(actor: A, supervisor: CellRef) -> Cell<A, M, R> {
         Cell::new(actor, Some(supervisor), runtime_weak())
     }
 

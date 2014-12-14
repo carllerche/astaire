@@ -42,11 +42,6 @@ impl System {
         self.start(); // Ensure that the system is running
         self.runtime.spawn(actor, None::<&ActorRef<A, M, R>>)
     }
-
-    pub fn spawn_link<M1: Send, M2: Send, R1: Async, R2: Async, A1: Actor<M1, R1>, A2: Actor<M2, R2>>(&self, actor: A1, supervisor: &ActorRef<A2, M2, R2>) -> ActorRef<A1, M1, R1> {
-        self.start(); // Ensure that the system is running
-        self.runtime.spawn(actor, Some(supervisor))
-    }
 }
 
 impl Clone for System {
